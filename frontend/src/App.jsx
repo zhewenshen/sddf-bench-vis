@@ -182,6 +182,14 @@ function parseCSV(csvText) {
 
 function App() {
   const [message, setMessage] = useState("");
+
+  // Session management
+  const [currentSessionId, setCurrentSessionId] = useState(null);
+  const [sessions, setSessions] = useState({});
+  const [showSessionMenu, setShowSessionMenu] = useState(false);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+
   const [runs, setRuns] = useState([]);
   const [runName, setRunName] = useState("");
   const [csvFile, setCsvFile] = useState(null);
@@ -200,14 +208,11 @@ function App() {
   const [newPlot, setNewPlot] = useState({
     name: "",
     selectedRuns: [],
-    plotType: "xput-cpu", // "xput-cpu" or "pds"
+    plotType: "xput-cpu", // "xput-cpu", "pds", or "cache"
     selectedPDs: [],
     cpuType: "total", // total, kernel, user
+    cacheMetrics: [], // selected cache metrics for cache plots
   });
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [showLoadDialog, setShowLoadDialog] = useState(false);
-  const [sessionName, setSessionName] = useState("");
-  const [savedSessions, setSavedSessions] = useState([]);
   const [pdCpuType, setPdCpuType] = useState("total"); // total, kernel, user
   const [customPlotCpuTypes, setCustomPlotCpuTypes] = useState({}); // { plotId: cpuType }
   const [showTableView, setShowTableView] = useState(false);
@@ -234,62 +239,108 @@ function App() {
     }
   };
 
+  // Initialize sessions from localStorage
   useEffect(() => {
     fetch("http://localhost:3001/api/hello")
       .then((res) => res.json())
       .then((data) => setMessage(data.message))
       .catch((err) => console.error(err));
 
-    // Try to load from localStorage first
-    const savedState = localStorage.getItem("sddf-bench-autosave");
-    if (savedState) {
+    // Load sessions from localStorage
+    const savedSessions = localStorage.getItem("benchmark-sessions");
+    const savedCurrentId = localStorage.getItem("benchmark-current-session");
+
+    if (savedSessions) {
       try {
-        const { runs: savedRuns, customPlots: savedPlots } =
-          JSON.parse(savedState);
-        if (savedRuns && savedRuns.length > 0) {
-          setRuns(savedRuns);
-          setCustomPlots(savedPlots || []);
-          return; // Skip loading test data
+        const parsedSessions = JSON.parse(savedSessions);
+        setSessions(parsedSessions);
+
+        // Load the last active session or first available
+        const sessionId = savedCurrentId || Object.keys(parsedSessions)[0];
+        if (sessionId && parsedSessions[sessionId]) {
+          setCurrentSessionId(sessionId);
+          loadSession(sessionId, parsedSessions);
+          return;
         }
       } catch (err) {
-        console.error("Failed to restore from localStorage:", err);
+        console.error("Failed to load sessions:", err);
       }
     }
 
-    // Load test data by default if no saved state
+    // Create default session with test data if no sessions exist
     Promise.all([
       fetch("/test_data.csv").then((res) => res.text()),
       fetch("/test_data.json").then((res) => res.json()),
     ])
       .then(([csvText, jsonData]) => {
         const data = parseCSV(csvText);
-        setRuns([
-          {
-            id: Date.now(),
-            name: "Test Run",
-            data: data,
-            cpuData: jsonData,
-            metadata: {
-              commit: "",
-              hardware: "",
-              dateTime: new Date().toISOString().slice(0, 16),
-              notes: "",
+        const defaultSessionId = `session-${Date.now()}`;
+        const defaultSession = {
+          id: defaultSessionId,
+          name: "Test Data",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          runs: [
+            {
+              id: Date.now(),
+              name: "Test Run",
+              data: data,
+              cpuData: jsonData,
+              metadata: {
+                commit: "",
+                hardware: "",
+                dateTime: new Date().toISOString().slice(0, 16),
+                notes: "",
+              },
             },
-          },
-        ]);
+          ],
+          customPlots: [],
+        };
+
+        const newSessions = { [defaultSessionId]: defaultSession };
+        setSessions(newSessions);
+        setCurrentSessionId(defaultSessionId);
+        setRuns(defaultSession.runs);
+        setCustomPlots(defaultSession.customPlots);
+
+        localStorage.setItem("benchmark-sessions", JSON.stringify(newSessions));
+        localStorage.setItem("benchmark-current-session", defaultSessionId);
       })
       .catch((err) => console.error("Failed to load test data:", err));
   }, []);
 
-  // Auto-save to localStorage whenever runs or customPlots change
-  useEffect(() => {
-    if (runs.length > 0) {
-      localStorage.setItem(
-        "sddf-bench-autosave",
-        JSON.stringify({ runs, customPlots }),
-      );
+  // Helper to load a session's data
+  const loadSession = (sessionId, sessionsData = sessions) => {
+    const session = sessionsData[sessionId];
+    if (session) {
+      setRuns(session.runs || []);
+      setCustomPlots(session.customPlots || []);
+      setActiveTab("throughput");
     }
-  }, [runs, customPlots]);
+  };
+
+  // Auto-save current session whenever runs or customPlots change
+  const [lastSaved, setLastSaved] = useState(null);
+  useEffect(() => {
+    if (currentSessionId && sessions[currentSessionId]) {
+      const updatedSession = {
+        ...sessions[currentSessionId],
+        runs,
+        customPlots,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updatedSessions = {
+        ...sessions,
+        [currentSessionId]: updatedSession,
+      };
+
+      setSessions(updatedSessions);
+      localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+      localStorage.setItem("benchmark-current-session", currentSessionId);
+      setLastSaved(new Date());
+    }
+  }, [runs, customPlots, currentSessionId]);
 
   const handleCsvFileSelect = (event) => {
     const file = event.target.files[0];
@@ -380,6 +431,11 @@ function App() {
       return;
     }
 
+    if (newPlot.plotType === "cache" && newPlot.cacheMetrics.length === 0) {
+      alert("Please select at least one cache metric");
+      return;
+    }
+
     const plot = {
       id: Date.now(),
       ...newPlot,
@@ -393,6 +449,7 @@ function App() {
       plotType: "xput-cpu",
       selectedPDs: [],
       cpuType: "total",
+      cacheMetrics: [],
     });
     setActiveTab(`custom-${plot.id}`);
   };
@@ -422,86 +479,106 @@ function App() {
     });
   };
 
-  const handleSaveSession = async () => {
-    if (!sessionName.trim()) {
-      alert("Please enter a session name");
+  const toggleCacheMetricSelection = (metricName) => {
+    setNewPlot({
+      ...newPlot,
+      cacheMetrics: newPlot.cacheMetrics.includes(metricName)
+        ? newPlot.cacheMetrics.filter((name) => name !== metricName)
+        : [...newPlot.cacheMetrics, metricName],
+    });
+  };
+
+  // Session management functions
+  const createNewSession = () => {
+    const newSessionId = `session-${Date.now()}`;
+    const newSession = {
+      id: newSessionId,
+      name: `Benchmark ${Object.keys(sessions).length + 1}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      runs: [],
+      customPlots: [],
+    };
+
+    const updatedSessions = { ...sessions, [newSessionId]: newSession };
+    setSessions(updatedSessions);
+    setCurrentSessionId(newSessionId);
+    setRuns([]);
+    setCustomPlots([]);
+    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+    localStorage.setItem("benchmark-current-session", newSessionId);
+    setShowSessionMenu(false);
+  };
+
+  const switchSession = (sessionId) => {
+    setCurrentSessionId(sessionId);
+    loadSession(sessionId);
+    localStorage.setItem("benchmark-current-session", sessionId);
+    setShowSessionMenu(false);
+  };
+
+  const renameSession = () => {
+    if (!renameValue.trim()) return;
+
+    const updatedSession = {
+      ...sessions[currentSessionId],
+      name: renameValue.trim(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedSessions = { ...sessions, [currentSessionId]: updatedSession };
+    setSessions(updatedSessions);
+    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+    setShowRenameDialog(false);
+    setRenameValue("");
+  };
+
+  const duplicateSession = () => {
+    const currentSession = sessions[currentSessionId];
+    const newSessionId = `session-${Date.now()}`;
+    const duplicatedSession = {
+      ...currentSession,
+      id: newSessionId,
+      name: `${currentSession.name} (Copy)`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedSessions = { ...sessions, [newSessionId]: duplicatedSession };
+    setSessions(updatedSessions);
+    setCurrentSessionId(newSessionId);
+    loadSession(newSessionId, updatedSessions);
+    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+    localStorage.setItem("benchmark-current-session", newSessionId);
+    setShowSessionMenu(false);
+  };
+
+  const deleteSession = (sessionId) => {
+    if (Object.keys(sessions).length === 1) {
+      alert("Cannot delete the only session");
       return;
     }
 
-    try {
-      const response = await fetch("http://localhost:3001/api/session/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: sessionName,
-          runs,
-          customPlots,
-        }),
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        alert("Session saved successfully!");
-        setShowSaveDialog(false);
-        setSessionName("");
-      } else {
-        alert("Failed to save session: " + data.error);
-      }
-    } catch (error) {
-      alert("Failed to save session: " + error.message);
-    }
-  };
-
-  const loadSessionList = async () => {
-    try {
-      const response = await fetch("http://localhost:3001/api/session/list");
-      const sessions = await response.json();
-      setSavedSessions(sessions);
-    } catch (error) {
-      console.error("Failed to load session list:", error);
-    }
-  };
-
-  const handleLoadSession = async (filename) => {
-    try {
-      const response = await fetch(
-        `http://localhost:3001/api/session/load/${filename}`,
-      );
-      const sessionData = await response.json();
-
-      setRuns(sessionData.runs || []);
-      setCustomPlots(sessionData.customPlots || []);
-      setShowLoadDialog(false);
-      setActiveTab("throughput");
-      alert("Session loaded successfully!");
-    } catch (error) {
-      alert("Failed to load session: " + error.message);
-    }
-  };
-
-  const handleDeleteSession = async (filename) => {
-    if (!confirm("Are you sure you want to delete this session?")) {
+    if (!confirm(`Delete session "${sessions[sessionId].name}"?`)) {
       return;
     }
 
-    try {
-      const response = await fetch(
-        `http://localhost:3001/api/session/delete/${filename}`,
-        {
-          method: "DELETE",
-        },
-      );
+    const updatedSessions = { ...sessions };
+    delete updatedSessions[sessionId];
 
-      const data = await response.json();
-      if (data.success) {
-        loadSessionList();
-      } else {
-        alert("Failed to delete session: " + data.error);
-      }
-    } catch (error) {
-      alert("Failed to delete session: " + error.message);
+    // Switch to another session if deleting current
+    if (sessionId === currentSessionId) {
+      const newCurrentId = Object.keys(updatedSessions)[0];
+      setCurrentSessionId(newCurrentId);
+      loadSession(newCurrentId, updatedSessions);
+      localStorage.setItem("benchmark-current-session", newCurrentId);
     }
+
+    setSessions(updatedSessions);
+    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+    setShowSessionMenu(false);
   };
+
 
   // Prepare chart colors
   const colors = ["#8884d8", "#82ca9d", "#ffc658", "#ff7c7c", "#a28bd4"];
@@ -670,7 +747,7 @@ function App() {
 
   const pdPlotLayout = {
     title: {
-      text: "Protection Domain CPU Utilization",
+      text: "Protection Domain CPU Utilisation",
       font: { size: 24, color: "#333" },
     },
     xaxis: {
@@ -684,7 +761,7 @@ function App() {
     },
     yaxis: {
       title: {
-        text: "CPU Utilization (%)",
+        text: "CPU Utilisation (%)",
         font: { size: 16 },
       },
       rangemode: "tozero",
@@ -739,7 +816,7 @@ function App() {
     },
     yaxis2: {
       title: {
-        text: "CPU Utilization (%)",
+        text: "CPU Utilisation (%)",
         font: { size: 16 },
       },
       overlaying: "y",
@@ -787,8 +864,297 @@ function App() {
   return (
     <div className="app-container">
       <div className="header">
-        <h1>seL4 Benchmark Visualization</h1>
-        <div className="header-actions">
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <h1>Benchmark Visualisation</h1>
+          {lastSaved && (
+            <span style={{
+              fontSize: "0.7rem",
+              color: "#6b6b68",
+              fontWeight: "400",
+              opacity: 0.7
+            }}>
+              Saved {lastSaved.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+        <div className="header-actions" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          {/* Session Selector */}
+          {currentSessionId && sessions[currentSessionId] && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span style={{ fontSize: "0.75rem", color: "#6b6b68", fontWeight: "500", textTransform: "uppercase", letterSpacing: "0.5px" }}>Session:</span>
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setShowSessionMenu(!showSessionMenu)}
+                  style={{
+                    padding: "0.35rem 0.65rem",
+                    background: "#fafaf8",
+                    border: "1px solid #e0e0d8",
+                    borderRadius: "2px",
+                    fontSize: "0.8rem",
+                    fontWeight: "600",
+                    color: "#191918",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    transition: "all 0.15s",
+                    minWidth: "140px",
+                    fontFamily: "monospace"
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "#f4f4f2";
+                    e.currentTarget.style.borderColor = "#191918";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "#fafaf8";
+                    e.currentTarget.style.borderColor = "#e0e0d8";
+                  }}
+                >
+                  <span style={{ flex: 1, textAlign: "left" }}>{sessions[currentSessionId].name}</span>
+                  <span style={{ fontSize: "0.6rem", opacity: 0.5 }}>▼</span>
+                </button>
+
+                {showSessionMenu && (
+                  <>
+                    <div
+                      style={{
+                        position: "fixed",
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        zIndex: 998
+                      }}
+                      onClick={() => setShowSessionMenu(false)}
+                    />
+                    <div style={{
+                      position: "absolute",
+                      top: "calc(100% + 0.5rem)",
+                      right: 0,
+                      background: "#fafaf8",
+                      border: "2px solid #191918",
+                      borderRadius: "0",
+                      boxShadow: "4px 4px 0 rgba(25, 25, 24, 0.15)",
+                      minWidth: "340px",
+                      zIndex: 999,
+                      maxHeight: "450px",
+                      overflowY: "auto",
+                      fontFamily: "monospace"
+                    }}>
+                      {/* Header */}
+                      <div style={{
+                        padding: "0.75rem 1rem",
+                        borderBottom: "2px solid #191918",
+                        background: "#191918",
+                        color: "#f4f4f2"
+                      }}>
+                        <div style={{ fontSize: "0.75rem", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>
+                          Sessions
+                        </div>
+                      </div>
+
+                      {/* New Session Button */}
+                      <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid #e0e0d8" }}>
+                        <button
+                          onClick={createNewSession}
+                          style={{
+                            width: "100%",
+                            padding: "0.5rem",
+                            background: "#191918",
+                            color: "#f4f4f2",
+                            border: "1px solid #191918",
+                            borderRadius: "0",
+                            fontSize: "0.75rem",
+                            fontWeight: "600",
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px"
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = "#f4f4f2";
+                            e.currentTarget.style.color = "#191918";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "#191918";
+                            e.currentTarget.style.color = "#f4f4f2";
+                          }}
+                        >
+                          + New Session
+                        </button>
+                      </div>
+
+                      {/* Session List */}
+                      <div style={{ padding: "0.5rem 0.75rem" }}>
+                        {Object.values(sessions)
+                          .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+                          .map((session) => {
+                            const isActive = session.id === currentSessionId;
+                            return (
+                              <div
+                                key={session.id}
+                                style={{
+                                  margin: "0.35rem 0",
+                                  padding: "0.65rem 0.75rem",
+                                  background: isActive ? "#f4f4f2" : "transparent",
+                                  border: isActive ? "1px solid #191918" : "1px solid #e0e0d8",
+                                  borderRadius: "0",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s"
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (!isActive) {
+                                    e.currentTarget.style.background = "#f4f4f2";
+                                    e.currentTarget.style.borderColor = "#191918";
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (!isActive) {
+                                    e.currentTarget.style.background = "transparent";
+                                    e.currentTarget.style.borderColor = "#e0e0d8";
+                                  }
+                                }}
+                              >
+                                <div onClick={() => switchSession(session.id)} style={{ marginBottom: "0.5rem" }}>
+                                  <div style={{
+                                    fontWeight: "700",
+                                    color: "#191918",
+                                    marginBottom: "0.25rem",
+                                    fontSize: "0.8rem",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "0.5rem"
+                                  }}>
+                                    <span>{session.name}</span>
+                                    {isActive && (
+                                      <span style={{
+                                        fontSize: "0.6rem",
+                                        color: "#6b6b68",
+                                        fontWeight: "500",
+                                        textTransform: "uppercase",
+                                        letterSpacing: "0.5px"
+                                      }}>
+                                        [active]
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "0.65rem", color: "#6b6b68", letterSpacing: "0.3px" }}>
+                                    {session.runs?.length || 0} run{(session.runs?.length || 0) !== 1 ? 's' : ''} • {new Date(session.updatedAt).toLocaleDateString('en-AU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                  </div>
+                                </div>
+
+                                {/* Action Buttons */}
+                                <div style={{ display: "flex", gap: "0.35rem" }}>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRenameValue(session.name);
+                                      setShowRenameDialog(true);
+                                      setShowSessionMenu(false);
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "0.35rem",
+                                      background: "transparent",
+                                      border: "1px solid #c0c0b8",
+                                      borderRadius: "0",
+                                      fontSize: "0.65rem",
+                                      cursor: "pointer",
+                                      fontWeight: "600",
+                                      color: "#191918",
+                                      transition: "all 0.15s",
+                                      textTransform: "uppercase",
+                                      letterSpacing: "0.3px"
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.background = "#191918";
+                                      e.currentTarget.style.color = "#f4f4f2";
+                                      e.currentTarget.style.borderColor = "#191918";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.background = "transparent";
+                                      e.currentTarget.style.color = "#191918";
+                                      e.currentTarget.style.borderColor = "#c0c0b8";
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      duplicateSession();
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "0.35rem",
+                                      background: "transparent",
+                                      border: "1px solid #c0c0b8",
+                                      borderRadius: "0",
+                                      fontSize: "0.65rem",
+                                      cursor: "pointer",
+                                      fontWeight: "600",
+                                      color: "#191918",
+                                      transition: "all 0.15s",
+                                      textTransform: "uppercase",
+                                      letterSpacing: "0.3px"
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.background = "#191918";
+                                      e.currentTarget.style.color = "#f4f4f2";
+                                      e.currentTarget.style.borderColor = "#191918";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.background = "transparent";
+                                      e.currentTarget.style.color = "#191918";
+                                      e.currentTarget.style.borderColor = "#c0c0b8";
+                                    }}
+                                  >
+                                    Copy
+                                  </button>
+                                  {Object.keys(sessions).length > 1 && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        deleteSession(session.id);
+                                      }}
+                                      style={{
+                                        padding: "0.35rem 0.5rem",
+                                        background: "transparent",
+                                        border: "1px solid #c0c0b8",
+                                        borderRadius: "0",
+                                        fontSize: "0.65rem",
+                                        cursor: "pointer",
+                                        fontWeight: "600",
+                                        color: "#8b0000",
+                                        transition: "all 0.15s",
+                                        textTransform: "uppercase",
+                                        letterSpacing: "0.3px"
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.background = "#8b0000";
+                                        e.currentTarget.style.color = "#f4f4f2";
+                                        e.currentTarget.style.borderColor = "#8b0000";
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.background = "transparent";
+                                        e.currentTarget.style.color = "#8b0000";
+                                        e.currentTarget.style.borderColor = "#c0c0b8";
+                                      }}
+                                    >
+                                      Del
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <button
             onClick={async (event) => {
               const btn = event.currentTarget;
@@ -824,22 +1190,6 @@ function App() {
           >
             Export PDF Report
           </button>
-          <button
-            onClick={() => setShowSaveDialog(true)}
-            className="header-btn"
-            disabled={runs.length === 0}
-          >
-            Save Session
-          </button>
-          <button
-            onClick={() => {
-              setShowLoadDialog(true);
-              loadSessionList();
-            }}
-            className="header-btn"
-          >
-            Load Session
-          </button>
         </div>
       </div>
 
@@ -848,74 +1198,66 @@ function App() {
           <h2>Add New Run</h2>
 
           <div className="input-group">
+            <label>Run Name</label>
             <input
               type="text"
-              placeholder="Run name (optional)"
+              placeholder="Optional"
               value={runName}
               onChange={(e) => setRunName(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "0.65rem",
-                border: "2px solid #e0e0e0",
-                borderRadius: "6px",
-                fontSize: "0.9rem",
-                transition: "border-color 0.2s",
-              }}
-              onFocus={(e) => e.target.style.borderColor = "#8884d8"}
-              onBlur={(e) => e.target.style.borderColor = "#e0e0e0"}
             />
           </div>
 
           <div style={{
-            background: "#f8f9fa",
-            padding: "1rem",
-            borderRadius: "8px",
-            border: "2px dashed #d0d0d0",
-            marginTop: "0.75rem"
+            background: "#ffffff",
+            padding: "0.75rem",
+            border: "2px solid #191918",
+            marginTop: "0.75rem",
+            boxShadow: "2px 2px 0 rgba(25, 25, 24, 0.1)"
           }}>
             <div style={{ marginBottom: "0.75rem" }}>
               <label
                 htmlFor="csv-upload"
                 style={{
                   display: "block",
-                  fontSize: "0.8rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.5rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.4rem",
                   textTransform: "uppercase",
-                  letterSpacing: "0.5px",
+                  letterSpacing: "0.8px",
                 }}
               >
-                CSV File (Required)
+                [1] CSV File *
               </label>
               <label
                 htmlFor="csv-upload"
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "0.75rem",
-                  background: "white",
-                  border: "2px solid #d0d0d0",
-                  borderRadius: "6px",
+                  display: "block",
+                  padding: "0.5rem",
+                  background: csvFile ? "#f4f4f2" : "#fafaf8",
+                  border: `1px solid ${csvFile ? "#191918" : "#c0c0b8"}`,
+                  borderRadius: "0",
                   cursor: uploading ? "not-allowed" : "pointer",
-                  transition: "all 0.2s",
-                  fontSize: "0.85rem",
-                  fontWeight: "500",
-                  color: "#555",
+                  transition: "all 0.15s",
+                  fontSize: "0.7rem",
+                  fontWeight: csvFile ? "700" : "500",
+                  color: "#191918",
+                  textAlign: "center",
                 }}
                 onMouseEnter={(e) => {
-                  if (!uploading) {
-                    e.currentTarget.style.borderColor = "#8884d8";
-                    e.currentTarget.style.background = "#f0f7ff";
+                  if (!uploading && !csvFile) {
+                    e.currentTarget.style.borderColor = "#191918";
+                    e.currentTarget.style.background = "#f4f4f2";
                   }
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = "#d0d0d0";
-                  e.currentTarget.style.background = "white";
+                  if (!csvFile) {
+                    e.currentTarget.style.borderColor = "#c0c0b8";
+                    e.currentTarget.style.background = "#fafaf8";
+                  }
                 }}
               >
-                {csvFile ? `✓ ${csvFile.name}` : "Choose CSV file"}
+                {csvFile ? `[✓] ${csvFile.name}` : "[ SELECT CSV FILE ]"}
               </label>
               <input
                 id="csv-upload"
@@ -932,44 +1274,45 @@ function App() {
                 htmlFor="json-upload"
                 style={{
                   display: "block",
-                  fontSize: "0.8rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.5rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.4rem",
                   textTransform: "uppercase",
-                  letterSpacing: "0.5px",
+                  letterSpacing: "0.8px",
                 }}
               >
-                JSON File (Required)
+                [2] JSON File *
               </label>
               <label
                 htmlFor="json-upload"
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "0.75rem",
-                  background: "white",
-                  border: "2px solid #d0d0d0",
-                  borderRadius: "6px",
+                  display: "block",
+                  padding: "0.5rem",
+                  background: jsonFile ? "#f4f4f2" : "#fafaf8",
+                  border: `1px solid ${jsonFile ? "#191918" : "#c0c0b8"}`,
+                  borderRadius: "0",
                   cursor: uploading ? "not-allowed" : "pointer",
-                  transition: "all 0.2s",
-                  fontSize: "0.85rem",
-                  fontWeight: "500",
-                  color: "#555",
+                  transition: "all 0.15s",
+                  fontSize: "0.7rem",
+                  fontWeight: jsonFile ? "700" : "500",
+                  color: "#191918",
+                  textAlign: "center",
                 }}
                 onMouseEnter={(e) => {
-                  if (!uploading) {
-                    e.currentTarget.style.borderColor = "#8884d8";
-                    e.currentTarget.style.background = "#f0f7ff";
+                  if (!uploading && !jsonFile) {
+                    e.currentTarget.style.borderColor = "#191918";
+                    e.currentTarget.style.background = "#f4f4f2";
                   }
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = "#d0d0d0";
-                  e.currentTarget.style.background = "white";
+                  if (!jsonFile) {
+                    e.currentTarget.style.borderColor = "#c0c0b8";
+                    e.currentTarget.style.background = "#fafaf8";
+                  }
                 }}
               >
-                {jsonFile ? `✓ ${jsonFile.name}` : "Choose JSON file"}
+                {jsonFile ? `[✓] ${jsonFile.name}` : "[ SELECT JSON FILE ]"}
               </label>
               <input
                 id="json-upload"
@@ -984,37 +1327,55 @@ function App() {
 
           <button
             onClick={() => setShowMetadataForm(!showMetadataForm)}
-            className="add-run-btn"
             style={{
               marginTop: "0.75rem",
               width: "100%",
               padding: "0.5rem",
-              fontSize: "0.85rem",
-              fontWeight: "500",
-              borderRadius: "6px",
-              background: showMetadataForm ? "#6c757d" : "#f8f9fa",
-              color: showMetadataForm ? "white" : "#555",
-              border: "1px solid #d0d0d0",
+              fontSize: "0.7rem",
+              fontWeight: "700",
+              borderRadius: "0",
+              background: showMetadataForm ? "#191918" : "transparent",
+              color: showMetadataForm ? "#f4f4f2" : "#191918",
+              border: "1px solid #c0c0b8",
+              cursor: "pointer",
+              transition: "all 0.15s",
+              textTransform: "uppercase",
+              letterSpacing: "0.5px"
+            }}
+            onMouseEnter={(e) => {
+              if (!showMetadataForm) {
+                e.currentTarget.style.background = "#f4f4f2";
+                e.currentTarget.style.borderColor = "#191918";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!showMetadataForm) {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.borderColor = "#c0c0b8";
+              }
             }}
           >
-            {showMetadataForm ? "Hide Metadata (Optional)" : "Add Metadata (Optional)"}
+            {showMetadataForm ? "[−] Hide Metadata" : "[+] Add Metadata (Optional)"}
           </button>
 
           {showMetadataForm && (
             <div style={{
               marginTop: "0.75rem",
               padding: "0.75rem",
-              background: "#f8f9fa",
-              borderRadius: "6px",
-              border: "1px solid #d0d0d0",
+              background: "#ffffff",
+              borderRadius: "0",
+              border: "2px solid #191918",
+              boxShadow: "2px 2px 0 rgba(25, 25, 24, 0.1)"
             }}>
-              <div style={{ marginBottom: "0.5rem" }}>
+              <div style={{ marginBottom: "0.6rem" }}>
                 <label style={{
                   display: "block",
-                  fontSize: "0.75rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.25rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.3rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
                 }}>
                   Commit Hash
                 </label>
@@ -1022,23 +1383,27 @@ function App() {
                   type="text"
                   value={newRunMetadata.commit}
                   onChange={(e) => setNewRunMetadata({ ...newRunMetadata, commit: e.target.value })}
-                  placeholder="e.g., abc123def456"
+                  placeholder="abc123def456"
                   style={{
                     width: "100%",
-                    padding: "0.5rem",
-                    border: "1px solid #d0d0d0",
-                    borderRadius: "4px",
-                    fontSize: "0.8rem",
+                    padding: "0.45rem",
+                    border: "1px solid #c0c0b8",
+                    borderRadius: "0",
+                    fontSize: "0.75rem",
+                    fontFamily: "monospace",
+                    background: "#fafaf8"
                   }}
                 />
               </div>
-              <div style={{ marginBottom: "0.5rem" }}>
+              <div style={{ marginBottom: "0.6rem" }}>
                 <label style={{
                   display: "block",
-                  fontSize: "0.75rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.25rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.3rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
                 }}>
                   Hardware
                 </label>
@@ -1046,23 +1411,27 @@ function App() {
                   type="text"
                   value={newRunMetadata.hardware}
                   onChange={(e) => setNewRunMetadata({ ...newRunMetadata, hardware: e.target.value })}
-                  placeholder="e.g., Raspberry Pi 4"
+                  placeholder="Raspberry Pi 4"
                   style={{
                     width: "100%",
-                    padding: "0.5rem",
-                    border: "1px solid #d0d0d0",
-                    borderRadius: "4px",
-                    fontSize: "0.8rem",
+                    padding: "0.45rem",
+                    border: "1px solid #c0c0b8",
+                    borderRadius: "0",
+                    fontSize: "0.75rem",
+                    fontFamily: "monospace",
+                    background: "#fafaf8"
                   }}
                 />
               </div>
-              <div style={{ marginBottom: "0.5rem" }}>
+              <div style={{ marginBottom: "0.6rem" }}>
                 <label style={{
                   display: "block",
-                  fontSize: "0.75rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.25rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.3rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
                 }}>
                   Date/Time
                 </label>
@@ -1072,20 +1441,24 @@ function App() {
                   onChange={(e) => setNewRunMetadata({ ...newRunMetadata, dateTime: e.target.value })}
                   style={{
                     width: "100%",
-                    padding: "0.5rem",
-                    border: "1px solid #d0d0d0",
-                    borderRadius: "4px",
-                    fontSize: "0.8rem",
+                    padding: "0.45rem",
+                    border: "1px solid #c0c0b8",
+                    borderRadius: "0",
+                    fontSize: "0.75rem",
+                    fontFamily: "monospace",
+                    background: "#fafaf8"
                   }}
                 />
               </div>
               <div>
                 <label style={{
                   display: "block",
-                  fontSize: "0.75rem",
-                  fontWeight: "600",
-                  color: "#666",
-                  marginBottom: "0.25rem",
+                  fontSize: "0.65rem",
+                  fontWeight: "700",
+                  color: "#191918",
+                  marginBottom: "0.3rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
                 }}>
                   Notes
                 </label>
@@ -1096,12 +1469,13 @@ function App() {
                   rows={2}
                   style={{
                     width: "100%",
-                    padding: "0.5rem",
-                    border: "1px solid #d0d0d0",
-                    borderRadius: "4px",
-                    fontSize: "0.8rem",
+                    padding: "0.45rem",
+                    border: "1px solid #c0c0b8",
+                    borderRadius: "0",
+                    fontSize: "0.75rem",
                     resize: "vertical",
-                    fontFamily: "inherit",
+                    fontFamily: "monospace",
+                    background: "#fafaf8"
                   }}
                 />
               </div>
@@ -1112,16 +1486,8 @@ function App() {
             onClick={handleAddRun}
             disabled={uploading || !csvFile || !jsonFile}
             className="add-run-btn"
-            style={{
-              marginTop: "0.75rem",
-              width: "100%",
-              padding: "0.75rem",
-              fontSize: "0.9rem",
-              fontWeight: "600",
-              borderRadius: "6px",
-            }}
           >
-            {uploading ? "Adding..." : "Add Run"}
+            {uploading ? "[...] Adding..." : "[→] Add Run"}
           </button>
         </div>
 
@@ -1228,35 +1594,59 @@ function App() {
               <>
                 <div
                   style={{
-                    padding: "0.75rem 1.5rem",
-                    background: "#f8f9fa",
-                    borderBottom: "1px solid #e0e0e0",
+                    padding: "0.75rem 1rem",
+                    background: "#fafaf8",
+                    borderBottom: "2px solid #191918",
                     display: "flex",
                     alignItems: "center",
-                    gap: "0.75rem",
+                    gap: "0.5rem",
                   }}
                 >
-                  <label style={{ fontWeight: 500, fontSize: "0.875rem", color: "#555" }}>
+                  <label style={{
+                    fontWeight: 700,
+                    fontSize: "0.65rem",
+                    color: "#191918",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.8px"
+                  }}>
                     CPU Type:
                   </label>
-                  <select
-                    value={pdCpuType}
-                    onChange={(e) => setPdCpuType(e.target.value)}
-                    style={{
-                      padding: "0.4rem 0.75rem",
-                      borderRadius: "6px",
-                      border: "1px solid #d0d0d0",
-                      fontSize: "0.875rem",
-                      backgroundColor: "white",
-                      cursor: "pointer",
-                      outline: "none",
-                      transition: "border-color 0.2s",
-                    }}
-                  >
-                    <option value="total">Total</option>
-                    <option value="kernel">Kernel</option>
-                    <option value="user">User</option>
-                  </select>
+                  <div style={{ display: "flex", gap: "0.35rem" }}>
+                    {["total", "kernel", "user"].map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setPdCpuType(type)}
+                        style={{
+                          padding: "0.35rem 0.75rem",
+                          borderRadius: "0",
+                          border: "1px solid #c0c0b8",
+                          fontSize: "0.7rem",
+                          fontWeight: "700",
+                          backgroundColor: pdCpuType === type ? "#191918" : "#ffffff",
+                          color: pdCpuType === type ? "#f4f4f2" : "#191918",
+                          cursor: "pointer",
+                          transition: "all 0.15s",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                          boxShadow: pdCpuType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                        }}
+                        onMouseEnter={(e) => {
+                          if (pdCpuType !== type) {
+                            e.currentTarget.style.background = "#f4f4f2";
+                            e.currentTarget.style.borderColor = "#191918";
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (pdCpuType !== type) {
+                            e.currentTarget.style.background = "#ffffff";
+                            e.currentTarget.style.borderColor = "#c0c0b8";
+                          }
+                        }}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="chart-section">
                   <Plot
@@ -1367,7 +1757,7 @@ function App() {
                     rangemode: "tozero",
                   },
                   yaxis2: {
-                    title: { text: "CPU Utilization (%)", font: { size: 16 } },
+                    title: { text: "CPU Utilisation (%)", font: { size: 16 } },
                     overlaying: "y",
                     side: "right",
                     range: [0, 105],
@@ -1504,7 +1894,7 @@ function App() {
                     showgrid: true,
                   },
                   yaxis: {
-                    title: { text: "CPU Utilization (%)", font: { size: 16 } },
+                    title: { text: "CPU Utilisation (%)", font: { size: 16 } },
                     rangemode: "tozero",
                     gridcolor: "#e0e0e0",
                     showgrid: true,
@@ -1527,6 +1917,86 @@ function App() {
                     borderwidth: 1,
                   },
                   margin: { l: 80, r: 150, t: 80, b: 80 },
+                  autosize: true,
+                  paper_bgcolor: "white",
+                  plot_bgcolor: "#fafafa",
+                };
+              } else if (customPlot.plotType === "cache") {
+                // Cache metrics plot
+                const selectedMetrics = customPlot.cacheMetrics || [];
+
+                selectedMetrics.forEach((metricName, metricIndex) => {
+                  selectedRunsData.forEach((run, runIndex) => {
+                    if (run.cpuData?.pmu_data?.[metricName]) {
+                      const metricData = run.cpuData.pmu_data[metricName];
+                      const throughputs = run.cpuData.metadata?.test_throughputs || [];
+
+                      customPlotData.push({
+                        x: throughputs.map(val => `${val}M`),
+                        y: metricData,
+                        type: "scatter",
+                        mode: "lines+markers",
+                        name: `${run.name} - ${metricName}`,
+                        line: {
+                          color: colors[runIndex % colors.length],
+                          width: 2,
+                          dash: metricIndex === 0 ? "solid" : metricIndex === 1 ? "dash" : "dot",
+                        },
+                        marker: {
+                          size: 6,
+                          color: colors[runIndex % colors.length],
+                        },
+                        hovertemplate:
+                          `<b>${run.name}</b><br>` +
+                          `${metricName}: %{y:,.0f}<br>` +
+                          "Throughput: %{x}<br>" +
+                          "<extra></extra>",
+                      });
+                    }
+                  });
+                });
+
+                customLayout = {
+                  title: {
+                    text: customPlot.name,
+                    font: { size: 24, color: "#333" },
+                  },
+                  xaxis: {
+                    type: "category",
+                    title: {
+                      text: "Throughput (Mbps)",
+                      font: { size: 16 },
+                    },
+                    gridcolor: "#e0e0e0",
+                    showgrid: true,
+                  },
+                  yaxis: {
+                    title: {
+                      text: "Count",
+                      font: { size: 16 },
+                    },
+                    rangemode: "tozero",
+                    gridcolor: "#e0e0e0",
+                    showgrid: true,
+                  },
+                  hovermode: "closest",
+                  hoverlabel: {
+                    bgcolor: "white",
+                    bordercolor: "#333",
+                    font: { size: 14 },
+                  },
+                  showlegend: true,
+                  legend: {
+                    orientation: "v",
+                    yanchor: "top",
+                    y: 1,
+                    xanchor: "left",
+                    x: 1.02,
+                    bgcolor: "rgba(255, 255, 255, 0.9)",
+                    bordercolor: "#ddd",
+                    borderwidth: 1,
+                  },
+                  margin: { l: 80, r: 200, t: 80, b: 80 },
                   autosize: true,
                   paper_bgcolor: "white",
                   plot_bgcolor: "#fafafa",
@@ -1622,52 +2092,137 @@ function App() {
 
               const pdStats = calculatePDStats();
 
+              // Calculate statistics for cache plots
+              const calculateCacheStats = () => {
+                if (customPlot.plotType !== "cache" || selectedRunsData.length < 2) return null;
+
+                const baselineRun = selectedRunsData[0];
+                const stats = [];
+
+                customPlot.cacheMetrics.forEach(metricName => {
+                  const metricStats = { metricName, comparisons: [] };
+
+                  const baselineData = baselineRun.cpuData?.pmu_data?.[metricName] || [];
+
+                  // Compare each other run
+                  for (let i = 1; i < selectedRunsData.length; i++) {
+                    const compareRun = selectedRunsData[i];
+                    const compareData = compareRun.cpuData?.pmu_data?.[metricName] || [];
+
+                    if (baselineData.length > 0 && compareData.length > 0) {
+                      const minLength = Math.min(baselineData.length, compareData.length);
+                      const relDiffs = [];
+                      const absDiffs = [];
+
+                      // Calculate point-by-point differences
+                      for (let j = 0; j < minLength; j++) {
+                        const baseline = baselineData[j];
+                        const compare = compareData[j];
+
+                        if (baseline > 0) {
+                          relDiffs.push(((compare - baseline) / baseline) * 100);
+                        }
+                        absDiffs.push(compare - baseline);
+                      }
+
+                      // Calculate averages for display
+                      const baselineAvg = baselineData.reduce((a, b) => a + b, 0) / baselineData.length;
+                      const compareAvg = compareData.reduce((a, b) => a + b, 0) / compareData.length;
+
+                      // Mean of point-by-point relative differences
+                      const meanRelDiff = relDiffs.length > 0 ? relDiffs.reduce((a, b) => a + b, 0) / relDiffs.length : 0;
+                      const meanAbsDiff = absDiffs.length > 0 ? absDiffs.reduce((a, b) => a + b, 0) / absDiffs.length : 0;
+
+                      metricStats.comparisons.push({
+                        runName: compareRun.name,
+                        baselineName: baselineRun.name,
+                        baselineAvg,
+                        compareAvg,
+                        relDiff: meanRelDiff,
+                        absDiff: meanAbsDiff
+                      });
+                    }
+                  }
+
+                  if (metricStats.comparisons.length > 0) {
+                    stats.push(metricStats);
+                  }
+                });
+
+                return stats.length > 0 ? stats : null;
+              };
+
+              const cacheStats = calculateCacheStats();
+
               return (
                 <div key={customPlot.id}>
                   {customPlot.plotType === "pds" && (
                     <div
                       style={{
-                        padding: "0.75rem 1.5rem",
-                        background: "#f8f9fa",
-                        borderBottom: "1px solid #e0e0e0",
+                        padding: "0.75rem 1rem",
+                        background: "#fafaf8",
+                        borderBottom: "2px solid #191918",
                         display: "flex",
                         alignItems: "center",
-                        gap: "0.75rem",
+                        gap: "0.5rem",
                       }}
                     >
-                      <label style={{ fontWeight: 500, fontSize: "0.875rem", color: "#555" }}>
+                      <label style={{
+                        fontWeight: 700,
+                        fontSize: "0.65rem",
+                        color: "#191918",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px"
+                      }}>
                         CPU Type:
                       </label>
-                      <select
-                        value={
-                          customPlotCpuTypes[customPlot.id] ||
-                          customPlot.cpuType ||
-                          "total"
-                        }
-                        onChange={(e) =>
-                          setCustomPlotCpuTypes({
-                            ...customPlotCpuTypes,
-                            [customPlot.id]: e.target.value,
-                          })
-                        }
-                        style={{
-                          padding: "0.4rem 0.75rem",
-                          borderRadius: "6px",
-                          border: "1px solid #d0d0d0",
-                          fontSize: "0.875rem",
-                          backgroundColor: "white",
-                          cursor: "pointer",
-                          outline: "none",
-                          transition: "border-color 0.2s",
-                        }}
-                      >
-                        <option value="total">Total</option>
-                        <option value="kernel">Kernel</option>
-                        <option value="user">User</option>
-                      </select>
+                      <div style={{ display: "flex", gap: "0.35rem" }}>
+                        {["total", "kernel", "user"].map((type) => {
+                          const currentType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
+                          return (
+                            <button
+                              key={type}
+                              onClick={() =>
+                                setCustomPlotCpuTypes({
+                                  ...customPlotCpuTypes,
+                                  [customPlot.id]: type,
+                                })
+                              }
+                              style={{
+                                padding: "0.35rem 0.75rem",
+                                borderRadius: "0",
+                                border: "1px solid #c0c0b8",
+                                fontSize: "0.7rem",
+                                fontWeight: "700",
+                                backgroundColor: currentType === type ? "#191918" : "#ffffff",
+                                color: currentType === type ? "#f4f4f2" : "#191918",
+                                cursor: "pointer",
+                                transition: "all 0.15s",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.5px",
+                                boxShadow: currentType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                              }}
+                              onMouseEnter={(e) => {
+                                if (currentType !== type) {
+                                  e.currentTarget.style.background = "#f4f4f2";
+                                  e.currentTarget.style.borderColor = "#191918";
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (currentType !== type) {
+                                  e.currentTarget.style.background = "#ffffff";
+                                  e.currentTarget.style.borderColor = "#c0c0b8";
+                                }
+                              }}
+                            >
+                              {type}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
-                  <div className="chart-section" style={{ height: pdStats ? "calc(100vh - 320px)" : "calc(100vh - 220px)", minHeight: "500px" }}>
+                  <div className="chart-section" style={{ height: (pdStats || cacheStats) ? "calc(100vh - 320px)" : "calc(100vh - 220px)", minHeight: "500px" }}>
                     <Plot
                       data={customPlotData}
                       layout={customLayout}
@@ -1678,24 +2233,149 @@ function App() {
                   </div>
                   {pdStats && (
                     <div style={{
-                      padding: "1rem 2rem",
+                      padding: "1rem 1.5rem",
                       background: "#fafaf8",
-                      borderTop: "1px solid #e0e0e0",
-                      fontSize: "0.875rem",
-                      maxHeight: "150px",
+                      borderTop: "2px solid #191918",
+                      fontSize: "0.75rem",
+                      maxHeight: "200px",
                       overflowY: "auto"
                     }}>
-                      <div style={{ fontWeight: "600", marginBottom: "0.75rem", color: "#191918" }}>
-                        Relative Overhead vs Baseline ({customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total"} CPU):
+                      <div style={{
+                        fontWeight: "700",
+                        marginBottom: "0.75rem",
+                        color: "#191918",
+                        fontSize: "0.7rem",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px"
+                      }}>
+                        Relative Overhead vs Baseline ({customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total"} CPU)
                       </div>
+
+                      {/* Formula Display */}
+                      <div style={{
+                        background: "#ffffff",
+                        border: "2px solid #191918",
+                        padding: "0.75rem",
+                        marginBottom: "1rem",
+                        fontFamily: "monospace",
+                        fontSize: "0.7rem",
+                        lineHeight: "1.5"
+                      }}>
+                        <div style={{ color: "#6b6b68", marginBottom: "0.4rem", fontWeight: "700", letterSpacing: "0.5px" }}>
+                          CALCULATION:
+                        </div>
+                        <div style={{ color: "#191918" }}>
+                          <div>For each data point i:</div>
+                          <div style={{ marginLeft: "1rem", marginTop: "0.2rem" }}>
+                            RelDiff[i] = ((Compare[i] - Baseline[i]) / Baseline[i]) × 100
+                          </div>
+                          <div style={{ marginLeft: "1rem" }}>
+                            AbsDiff[i] = Compare[i] - Baseline[i]
+                          </div>
+                          <div style={{ marginTop: "0.4rem" }}>
+                            Result = Arithmetic Mean of differences
+                          </div>
+                        </div>
+                      </div>
+
                       {pdStats.map(({ pdName, comparisons }) => (
                         <div key={pdName} style={{ marginBottom: "0.75rem" }}>
-                          <div style={{ fontWeight: "600", color: "#6b6b68", marginBottom: "0.25rem" }}>
-                            {pdName}:
+                          <div style={{
+                            fontWeight: "700",
+                            color: "#191918",
+                            marginBottom: "0.35rem",
+                            fontSize: "0.7rem",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px"
+                          }}>
+                            [{pdName}]
                           </div>
                           {comparisons.map((comp, idx) => (
-                            <div key={idx} style={{ marginLeft: "1rem", color: "#191918", lineHeight: "1.6" }}>
-                              {comp.runName} vs {comp.baselineName}: {comp.meanRel >= 0 ? '+' : ''}{comp.meanRel.toFixed(1)}% ({comp.meanAbs >= 0 ? '+' : ''}{comp.meanAbs.toFixed(2)}pp)
+                            <div key={idx} style={{
+                              marginLeft: "1rem",
+                              color: "#191918",
+                              lineHeight: "1.7",
+                              fontFamily: "monospace",
+                              fontSize: "0.7rem"
+                            }}>
+                              {comp.runName} vs {comp.baselineName}: <span style={{ fontWeight: "700", color: comp.meanRel >= 0 ? "#8b0000" : "#006400" }}>{comp.meanRel >= 0 ? '+' : ''}{comp.meanRel.toFixed(1)}%</span> ({comp.meanAbs >= 0 ? '+' : ''}{comp.meanAbs.toFixed(2)}pp)
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {cacheStats && (
+                    <div style={{
+                      padding: "1rem 1.5rem",
+                      background: "#fafaf8",
+                      borderTop: "2px solid #191918",
+                      fontSize: "0.75rem",
+                      maxHeight: "200px",
+                      overflowY: "auto"
+                    }}>
+                      <div style={{
+                        fontWeight: "700",
+                        marginBottom: "0.75rem",
+                        color: "#191918",
+                        fontSize: "0.7rem",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px"
+                      }}>
+                        Cache Metrics Comparison vs Baseline
+                      </div>
+
+                      {/* Formula Display */}
+                      <div style={{
+                        background: "#ffffff",
+                        border: "2px solid #191918",
+                        padding: "0.75rem",
+                        marginBottom: "1rem",
+                        fontFamily: "monospace",
+                        fontSize: "0.7rem",
+                        lineHeight: "1.5"
+                      }}>
+                        <div style={{ color: "#6b6b68", marginBottom: "0.4rem", fontWeight: "700", letterSpacing: "0.5px" }}>
+                          CALCULATION:
+                        </div>
+                        <div style={{ color: "#191918" }}>
+                          <div>For each data point i:</div>
+                          <div style={{ marginLeft: "1rem", marginTop: "0.2rem" }}>
+                            RelDiff[i] = ((Compare[i] - Baseline[i]) / Baseline[i]) × 100
+                          </div>
+                          <div style={{ marginLeft: "1rem" }}>
+                            AbsDiff[i] = Compare[i] - Baseline[i]
+                          </div>
+                          <div style={{ marginTop: "0.4rem" }}>
+                            Result = Arithmetic Mean of differences
+                          </div>
+                        </div>
+                      </div>
+
+                      {cacheStats.map(({ metricName, comparisons }) => (
+                        <div key={metricName} style={{ marginBottom: "0.75rem" }}>
+                          <div style={{
+                            fontWeight: "700",
+                            color: "#191918",
+                            marginBottom: "0.35rem",
+                            fontSize: "0.7rem",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px"
+                          }}>
+                            [{metricName}]
+                          </div>
+                          {comparisons.map((comp, idx) => (
+                            <div key={idx} style={{
+                              marginLeft: "1rem",
+                              color: "#191918",
+                              lineHeight: "1.7",
+                              fontFamily: "monospace",
+                              fontSize: "0.7rem"
+                            }}>
+                              {comp.runName} vs {comp.baselineName}: <span style={{ fontWeight: "700", color: comp.relDiff >= 0 ? "#8b0000" : "#006400" }}>{comp.relDiff >= 0 ? '+' : ''}{comp.relDiff.toFixed(1)}%</span>
+                              <div style={{ fontSize: "0.65rem", color: "#6b6b68", marginTop: "0.2rem" }}>
+                                Baseline: {comp.baselineAvg.toLocaleString('en-AU', {maximumFractionDigits: 0})} | Compare: {comp.compareAvg.toLocaleString('en-AU', {maximumFractionDigits: 0})}
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1744,6 +2424,7 @@ function App() {
               >
                 <option value="xput-cpu">Throughput + CPU</option>
                 <option value="pds">Protection Domains</option>
+                <option value="cache">Cache Metrics</option>
               </select>
             </div>
 
@@ -1804,6 +2485,37 @@ function App() {
                 );
               })()}
 
+            {newPlot.plotType === "cache" &&
+              (() => {
+                // Get available cache metrics from first run with PMU data
+                const cacheMetrics = ["L1 i-cache misses", "L1 d-cache misses", "L1 i-tlb misses", "L1 d-tlb misses", "Instructions", "Branch mispredictions"];
+                const hasPMUData = runs.some((run) => run.cpuData?.pmu_data);
+
+                return hasPMUData ? (
+                  <div className="dialog-field">
+                    <label>Select Cache Metrics:</label>
+                    <div className="checkbox-list">
+                      {cacheMetrics.map((metricName) => (
+                        <label key={metricName} className="checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={newPlot.cacheMetrics.includes(metricName)}
+                            onChange={() => toggleCacheMetricSelection(metricName)}
+                          />
+                          {metricName}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="dialog-field">
+                    <p style={{ color: "#999", fontSize: "0.9rem" }}>
+                      No cache/PMU data available. Upload runs with PMU data to enable this option.
+                    </p>
+                  </div>
+                );
+              })()}
+
             <div className="dialog-actions">
               <button
                 onClick={() => setShowPlotDialog(false)}
@@ -1813,102 +2525,6 @@ function App() {
               </button>
               <button onClick={handleAddCustomPlot} className="btn-create">
                 Create Plot
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showSaveDialog && (
-        <div
-          className="dialog-overlay"
-          onClick={() => setShowSaveDialog(false)}
-        >
-          <div className="dialog" onClick={(e) => e.stopPropagation()}>
-            <h2>Save Session</h2>
-            <div className="dialog-field">
-              <label>Session Name:</label>
-              <input
-                type="text"
-                value={sessionName}
-                onChange={(e) => setSessionName(e.target.value)}
-                placeholder="Enter session name"
-                autoFocus
-              />
-            </div>
-            <div className="dialog-actions">
-              <button
-                onClick={() => setShowSaveDialog(false)}
-                className="btn-cancel"
-              >
-                Cancel
-              </button>
-              <button onClick={handleSaveSession} className="btn-create">
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showLoadDialog && (
-        <div
-          className="dialog-overlay"
-          onClick={() => setShowLoadDialog(false)}
-        >
-          <div
-            className="dialog"
-            onClick={(e) => e.stopPropagation()}
-            style={{ minWidth: "600px" }}
-          >
-            <h2>Load Session</h2>
-            {savedSessions.length > 0 ? (
-              <div className="session-list">
-                {savedSessions.map((session) => (
-                  <div key={session.filename} className="session-item">
-                    <div className="session-info">
-                      <div className="session-name">{session.name}</div>
-                      <div className="session-details">
-                        {session.runCount} runs, {session.plotCount} custom
-                        plots
-                        <br />
-                        <span style={{ fontSize: "0.8rem", color: "#999" }}>
-                          {new Date(session.savedAt).toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="session-actions">
-                      <button
-                        onClick={() => handleLoadSession(session.filename)}
-                        className="btn-create"
-                        style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
-                      >
-                        Load
-                      </button>
-                      <button
-                        onClick={() => handleDeleteSession(session.filename)}
-                        className="btn-cancel"
-                        style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p
-                style={{ color: "#999", textAlign: "center", padding: "2rem" }}
-              >
-                No saved sessions found
-              </p>
-            )}
-            <div className="dialog-actions">
-              <button
-                onClick={() => setShowLoadDialog(false)}
-                className="btn-cancel"
-              >
-                Close
               </button>
             </div>
           </div>
@@ -1928,6 +2544,43 @@ function App() {
             ));
           }}
         />
+      )}
+
+      {/* Rename Session Dialog */}
+      {showRenameDialog && (
+        <div
+          className="dialog-overlay"
+          onClick={() => setShowRenameDialog(false)}
+        >
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h2>Rename Session</h2>
+            <div className="dialog-field">
+              <label>Session Name:</label>
+              <input
+                type="text"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                placeholder="Enter session name"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') renameSession();
+                  if (e.key === 'Escape') setShowRenameDialog(false);
+                }}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button
+                onClick={() => setShowRenameDialog(false)}
+                className="btn-cancel"
+              >
+                Cancel
+              </button>
+              <button onClick={renameSession} className="btn-create">
+                Rename
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

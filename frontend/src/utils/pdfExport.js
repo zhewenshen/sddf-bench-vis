@@ -94,7 +94,7 @@ function createTitlePage(pdf, runs, pageWidth, pageHeight, margin) {
   // Main title - teletype style
   pdf.setFontSize(20);
   pdf.setFont("courier", "bold");
-  pdf.text("seL4 BENCHMARK REPORT", margin, yPos);
+  pdf.text("BENCHMARK REPORT", margin, yPos);
 
   yPos += 10;
   pdf.setFontSize(10);
@@ -291,9 +291,9 @@ async function createPDComparisonPlot(runs, pdName) {
   });
 
   const layout = {
-    title: `${pdName} - CPU Utilization`,
+    title: `${pdName} - CPU Utilisation`,
     xaxis: { title: 'Throughput (Mbps)' },
-    yaxis: { title: 'CPU Utilization (%)' },
+    yaxis: { title: 'CPU Utilisation (%)' },
     font: { family: 'Courier New, monospace', size: 10 },
     showlegend: true,
     legend: { x: 0, y: 1 },
@@ -437,7 +437,7 @@ export async function exportBenchmarkReport(runs, customPlots) {
 
     // ===== SECTION 1: MAIN THROUGHPUT PLOT =====
     pdf.addPage('l');
-    let yPosition = addSectionHeader(pdf, "THROUGHPUT vs CPU UTILIZATION", pageWidth, margin);
+    let yPosition = addSectionHeader(pdf, "THROUGHPUT vs CPU UTILISATION", pageWidth, margin);
 
     // Capture main throughput plot only (skip PD overview plot)
     const allPlotElements = document.querySelectorAll('.js-plotly-plot');
@@ -447,7 +447,7 @@ export async function exportBenchmarkReport(runs, customPlots) {
       yPosition = await capturePlotToPDF(
         pdf,
         allPlotElements[0],
-        "System Throughput vs CPU Utilization",
+        "System Throughput vs CPU Utilisation",
         yPosition,
         pageWidth,
         pageHeight,
@@ -494,7 +494,7 @@ export async function exportBenchmarkReport(runs, customPlots) {
           yPosition = await addGeneratedPlotToPDF(
             pdf,
             imgData,
-            `CPU Utilization (Total, Kernel, User)`,
+            `CPU Utilisation (Total, Kernel, User)`,
             yPosition,
             pageWidth,
             pageHeight,
@@ -676,7 +676,7 @@ export async function exportBenchmarkReport(runs, customPlots) {
 
     // Save PDF
     const timestamp = new Date().toISOString().split('T')[0];
-    pdf.save(`seL4_Benchmark_Report_${timestamp}.pdf`);
+    pdf.save(`Benchmark_Report_${timestamp}.pdf`);
 
   } catch (error) {
     console.error("PDF Export Error:", error);
