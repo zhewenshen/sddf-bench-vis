@@ -10,6 +10,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  DragOverlay,
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -19,6 +20,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
 
 // Sortable Run Item Component
 function SortableRunItem({ run, index, colors, onDelete, onMoveUp, onMoveDown, onClick, isFirst, canMoveUp, canMoveDown }) {
@@ -185,6 +187,13 @@ function App() {
   const [csvFile, setCsvFile] = useState(null);
   const [jsonFile, setJsonFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [showMetadataForm, setShowMetadataForm] = useState(false);
+  const [newRunMetadata, setNewRunMetadata] = useState({
+    commit: "",
+    hardware: "",
+    dateTime: "",
+    notes: "",
+  });
   const [activeTab, setActiveTab] = useState("throughput");
   const [customPlots, setCustomPlots] = useState([]);
   const [showPlotDialog, setShowPlotDialog] = useState(false);
@@ -260,6 +269,12 @@ function App() {
             name: "Test Run",
             data: data,
             cpuData: jsonData,
+            metadata: {
+              commit: "",
+              hardware: "",
+              dateTime: new Date().toISOString().slice(0, 16),
+              notes: "",
+            },
           },
         ]);
       })
@@ -312,12 +327,20 @@ function App() {
         name: runName || `Run ${runs.length + 1}`,
         data: data,
         cpuData: cpuData,
+        metadata: {
+          commit: newRunMetadata.commit,
+          hardware: newRunMetadata.hardware,
+          dateTime: newRunMetadata.dateTime || new Date().toISOString().slice(0, 16),
+          notes: newRunMetadata.notes,
+        },
       };
 
       setRuns([...runs, newRun]);
       setRunName("");
       setCsvFile(null);
       setJsonFile(null);
+      setNewRunMetadata({ commit: "", hardware: "", dateTime: "", notes: "" });
+      setShowMetadataForm(false);
       // Reset file inputs
       document.getElementById("csv-upload").value = "";
       document.getElementById("json-upload").value = "";
@@ -960,6 +983,132 @@ function App() {
           </div>
 
           <button
+            onClick={() => setShowMetadataForm(!showMetadataForm)}
+            className="add-run-btn"
+            style={{
+              marginTop: "0.75rem",
+              width: "100%",
+              padding: "0.5rem",
+              fontSize: "0.85rem",
+              fontWeight: "500",
+              borderRadius: "6px",
+              background: showMetadataForm ? "#6c757d" : "#f8f9fa",
+              color: showMetadataForm ? "white" : "#555",
+              border: "1px solid #d0d0d0",
+            }}
+          >
+            {showMetadataForm ? "Hide Metadata (Optional)" : "Add Metadata (Optional)"}
+          </button>
+
+          {showMetadataForm && (
+            <div style={{
+              marginTop: "0.75rem",
+              padding: "0.75rem",
+              background: "#f8f9fa",
+              borderRadius: "6px",
+              border: "1px solid #d0d0d0",
+            }}>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <label style={{
+                  display: "block",
+                  fontSize: "0.75rem",
+                  fontWeight: "600",
+                  color: "#666",
+                  marginBottom: "0.25rem",
+                }}>
+                  Commit Hash
+                </label>
+                <input
+                  type="text"
+                  value={newRunMetadata.commit}
+                  onChange={(e) => setNewRunMetadata({ ...newRunMetadata, commit: e.target.value })}
+                  placeholder="e.g., abc123def456"
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    border: "1px solid #d0d0d0",
+                    borderRadius: "4px",
+                    fontSize: "0.8rem",
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <label style={{
+                  display: "block",
+                  fontSize: "0.75rem",
+                  fontWeight: "600",
+                  color: "#666",
+                  marginBottom: "0.25rem",
+                }}>
+                  Hardware
+                </label>
+                <input
+                  type="text"
+                  value={newRunMetadata.hardware}
+                  onChange={(e) => setNewRunMetadata({ ...newRunMetadata, hardware: e.target.value })}
+                  placeholder="e.g., Raspberry Pi 4"
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    border: "1px solid #d0d0d0",
+                    borderRadius: "4px",
+                    fontSize: "0.8rem",
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <label style={{
+                  display: "block",
+                  fontSize: "0.75rem",
+                  fontWeight: "600",
+                  color: "#666",
+                  marginBottom: "0.25rem",
+                }}>
+                  Date/Time
+                </label>
+                <input
+                  type="datetime-local"
+                  value={newRunMetadata.dateTime}
+                  onChange={(e) => setNewRunMetadata({ ...newRunMetadata, dateTime: e.target.value })}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    border: "1px solid #d0d0d0",
+                    borderRadius: "4px",
+                    fontSize: "0.8rem",
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{
+                  display: "block",
+                  fontSize: "0.75rem",
+                  fontWeight: "600",
+                  color: "#666",
+                  marginBottom: "0.25rem",
+                }}>
+                  Notes
+                </label>
+                <textarea
+                  value={newRunMetadata.notes}
+                  onChange={(e) => setNewRunMetadata({ ...newRunMetadata, notes: e.target.value })}
+                  placeholder="Additional notes..."
+                  rows={2}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    border: "1px solid #d0d0d0",
+                    borderRadius: "4px",
+                    fontSize: "0.8rem",
+                    resize: "vertical",
+                    fontFamily: "inherit",
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          <button
             onClick={handleAddRun}
             disabled={uploading || !csvFile || !jsonFile}
             className="add-run-btn"
@@ -983,6 +1132,7 @@ function App() {
               sensors={sensors}
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}
+              modifiers={[restrictToVerticalAxis, restrictToParentElement]}
             >
               <SortableContext
                 items={runs.map(r => r.id)}
@@ -1771,6 +1921,11 @@ function App() {
           onClose={() => {
             setShowTableView(false);
             setSelectedRunForTable(null);
+          }}
+          onUpdateMetadata={(runId, metadata) => {
+            setRuns(runs.map(run =>
+              run.id === runId ? { ...run, metadata } : run
+            ));
           }}
         />
       )}

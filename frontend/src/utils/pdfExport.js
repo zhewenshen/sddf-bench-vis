@@ -139,6 +139,92 @@ function createTitlePage(pdf, runs, pageWidth, pageHeight, margin) {
 }
 
 /**
+ * Create metadata page for all runs
+ */
+function createMetadataPage(pdf, runs, pageWidth, pageHeight, margin) {
+  let yPos = margin + 10;
+
+  pdf.setFontSize(14);
+  pdf.setFont("courier", "bold");
+  pdf.text("RUN METADATA", margin, yPos);
+  yPos += 8;
+
+  pdf.setFontSize(10);
+  pdf.setFont("courier", "normal");
+  pdf.text("=" .repeat(80), margin, yPos);
+  yPos += 10;
+
+  runs.forEach((run, idx) => {
+    const meta = run.metadata || {};
+
+    // Run name header
+    pdf.setFont("courier", "bold");
+    pdf.text(`[${idx + 1}] ${run.name}`, margin, yPos);
+    yPos += 6;
+
+    pdf.setFont("courier", "normal");
+
+    // Format metadata fields with proper spacing
+    const fields = [
+      { label: "Commit Hash:", value: meta.commit || "Not specified", icon: ">" },
+      { label: "Hardware:   ", value: meta.hardware || "Not specified", icon: ">" },
+      {
+        label: "Date/Time:  ",
+        value: meta.dateTime ? new Date(meta.dateTime).toLocaleString() : "Not specified",
+        icon: ">"
+      },
+    ];
+
+    fields.forEach(field => {
+      pdf.text(`    ${field.icon} ${field.label} ${field.value}`, margin, yPos);
+      yPos += 5;
+    });
+
+    // Notes field (can be multi-line)
+    if (meta.notes) {
+      pdf.text(`    > Notes:`, margin, yPos);
+      yPos += 5;
+
+      // Split notes into lines if too long
+      const maxWidth = pageWidth - margin * 2 - 15;
+      const noteLines = pdf.splitTextToSize(`      ${meta.notes}`, maxWidth);
+      noteLines.forEach(line => {
+        if (yPos > pageHeight - margin - 10) {
+          pdf.addPage();
+          yPos = margin;
+        }
+        pdf.text(line, margin, yPos);
+        yPos += 5;
+      });
+    } else {
+      pdf.text(`    > Notes:      No additional notes`, margin, yPos);
+      yPos += 5;
+    }
+
+    // Separator between runs
+    yPos += 3;
+    if (idx < runs.length - 1) {
+      pdf.text("-" .repeat(80), margin, yPos);
+      yPos += 8;
+    }
+
+    // Check if we need a new page
+    if (yPos > pageHeight - margin - 30 && idx < runs.length - 1) {
+      pdf.addPage();
+      yPos = margin + 10;
+      pdf.setFontSize(14);
+      pdf.setFont("courier", "bold");
+      pdf.text("RUN METADATA (continued)", margin, yPos);
+      yPos += 8;
+      pdf.setFontSize(10);
+      pdf.setFont("courier", "normal");
+      pdf.text("=" .repeat(80), margin, yPos);
+      yPos += 10;
+    }
+  });
+}
+
+/**
  * Add simple section header with teletype style
  */
 function addSectionHeader(pdf, title, pageWidth, margin) {
@@ -344,6 +430,10 @@ export async function exportBenchmarkReport(runs, customPlots) {
 
     // ===== TITLE PAGE =====
     createTitlePage(pdf, runs, pageWidth, pageHeight, margin);
+
+    // ===== METADATA PAGE =====
+    pdf.addPage('l');
+    createMetadataPage(pdf, runs, pageWidth, pageHeight, margin);
 
     // ===== SECTION 1: MAIN THROUGHPUT PLOT =====
     pdf.addPage('l');

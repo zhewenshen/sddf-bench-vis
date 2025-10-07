@@ -16,10 +16,18 @@ import { prepareTableData, formatters } from "../utils/tableData.js";
  * @param {Object} props - Component props
  * @param {Object} props.run - The run object containing data and cpuData
  * @param {Function} props.onClose - Callback function to close the table view
+ * @param {Function} props.onUpdateMetadata - Callback to update run metadata
  * @returns {JSX.Element} The table component
  */
-function RunDataTable({ run, onClose }) {
+function RunDataTable({ run, onClose, onUpdateMetadata }) {
   const [expanded, setExpanded] = useState({});
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [metadata, setMetadata] = useState({
+    commit: run.metadata?.commit || "",
+    hardware: run.metadata?.hardware || "",
+    dateTime: run.metadata?.dateTime || new Date().toISOString().slice(0, 16),
+    notes: run.metadata?.notes || "",
+  });
 
   // Prepare table data from run object
   const data = useMemo(() => prepareTableData(run), [run]);
@@ -125,6 +133,23 @@ function RunDataTable({ run, onClose }) {
     getRowCanExpand: (row) => !!row.original.protectionDomains,
   });
 
+  const handleSaveMetadata = () => {
+    if (onUpdateMetadata) {
+      onUpdateMetadata(run.id, metadata);
+    }
+    setIsEditingMetadata(false);
+  };
+
+  const handleCancelMetadata = () => {
+    setMetadata({
+      commit: run.metadata?.commit || "",
+      hardware: run.metadata?.hardware || "",
+      dateTime: run.metadata?.dateTime || new Date().toISOString().slice(0, 16),
+      notes: run.metadata?.notes || "",
+    });
+    setIsEditingMetadata(false);
+  };
+
   return (
     <div
       style={{
@@ -161,21 +186,19 @@ function RunDataTable({ run, onClose }) {
           style={{
             padding: "1.25rem 1.5rem",
             borderBottom: "1px solid #e0e0e0",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
             backgroundColor: "#f8f9fa",
           }}
         >
-          <div>
-            <h2 style={{ margin: 0, fontSize: "1.5rem", color: "#333" }}>
-              {run.name}
-            </h2>
-            <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.875rem", color: "#666" }}>
-              {data.length} test{data.length !== 1 ? "s" : ""}
-              {run.cpuData ? " with CPU data" : ""}
-            </p>
-          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem" }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: "1.5rem", color: "#333" }}>
+                {run.name}
+              </h2>
+              <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.875rem", color: "#666" }}>
+                {data.length} test{data.length !== 1 ? "s" : ""}
+                {run.cpuData ? " with CPU data" : ""}
+              </p>
+            </div>
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
             <button
               onClick={() => {
@@ -263,6 +286,179 @@ function RunDataTable({ run, onClose }) {
           >
             ×
           </button>
+          </div>
+          </div>
+
+          {/* Metadata Section */}
+          <div style={{
+            backgroundColor: "white",
+            padding: "1rem",
+            borderRadius: "6px",
+            border: "1px solid #e0e0e0",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+              <h3 style={{ margin: 0, fontSize: "0.95rem", fontWeight: "600", color: "#555" }}>
+                Run Metadata
+              </h3>
+              {!isEditingMetadata ? (
+                <button
+                  onClick={() => setIsEditingMetadata(true)}
+                  style={{
+                    padding: "0.35rem 0.75rem",
+                    background: "#191918",
+                    color: "#f4f4f2",
+                    border: "none",
+                    borderRadius: "4px",
+                    fontSize: "0.8rem",
+                    fontWeight: "500",
+                    cursor: "pointer",
+                    transition: "background 0.2s",
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = "#2a2a28"}
+                  onMouseLeave={(e) => e.currentTarget.style.background = "#191918"}
+                >
+                  Edit
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    onClick={handleSaveMetadata}
+                    style={{
+                      padding: "0.35rem 0.75rem",
+                      background: "#28a745",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "4px",
+                      fontSize: "0.8rem",
+                      fontWeight: "500",
+                      cursor: "pointer",
+                      transition: "background 0.2s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = "#218838"}
+                    onMouseLeave={(e) => e.currentTarget.style.background = "#28a745"}
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={handleCancelMetadata}
+                    style={{
+                      padding: "0.35rem 0.75rem",
+                      background: "#6c757d",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "4px",
+                      fontSize: "0.8rem",
+                      fontWeight: "500",
+                      cursor: "pointer",
+                      transition: "background 0.2s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = "#5a6268"}
+                    onMouseLeave={(e) => e.currentTarget.style.background = "#6c757d"}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isEditingMetadata ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", fontSize: "0.85rem" }}>
+                <div>
+                  <label style={{ display: "block", marginBottom: "0.25rem", fontWeight: "500", color: "#555" }}>
+                    Commit Hash
+                  </label>
+                  <input
+                    type="text"
+                    value={metadata.commit}
+                    onChange={(e) => setMetadata({ ...metadata, commit: e.target.value })}
+                    placeholder="e.g., abc123def456"
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      border: "1px solid #d0d0d0",
+                      borderRadius: "4px",
+                      fontSize: "0.85rem",
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", marginBottom: "0.25rem", fontWeight: "500", color: "#555" }}>
+                    Hardware
+                  </label>
+                  <input
+                    type="text"
+                    value={metadata.hardware}
+                    onChange={(e) => setMetadata({ ...metadata, hardware: e.target.value })}
+                    placeholder="e.g., Raspberry Pi 4, x86_64 Server"
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      border: "1px solid #d0d0d0",
+                      borderRadius: "4px",
+                      fontSize: "0.85rem",
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", marginBottom: "0.25rem", fontWeight: "500", color: "#555" }}>
+                    Date/Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={metadata.dateTime}
+                    onChange={(e) => setMetadata({ ...metadata, dateTime: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      border: "1px solid #d0d0d0",
+                      borderRadius: "4px",
+                      fontSize: "0.85rem",
+                    }}
+                  />
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <label style={{ display: "block", marginBottom: "0.25rem", fontWeight: "500", color: "#555" }}>
+                    Notes
+                  </label>
+                  <textarea
+                    value={metadata.notes}
+                    onChange={(e) => setMetadata({ ...metadata, notes: e.target.value })}
+                    placeholder="Additional notes about this run..."
+                    rows={3}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      border: "1px solid #d0d0d0",
+                      borderRadius: "4px",
+                      fontSize: "0.85rem",
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", fontSize: "0.85rem" }}>
+                <div>
+                  <span style={{ fontWeight: "500", color: "#666" }}>Commit: </span>
+                  <span style={{ color: "#333" }}>{metadata.commit || "Not set"}</span>
+                </div>
+                <div>
+                  <span style={{ fontWeight: "500", color: "#666" }}>Hardware: </span>
+                  <span style={{ color: "#333" }}>{metadata.hardware || "Not set"}</span>
+                </div>
+                <div>
+                  <span style={{ fontWeight: "500", color: "#666" }}>Date/Time: </span>
+                  <span style={{ color: "#333" }}>
+                    {metadata.dateTime ? new Date(metadata.dateTime).toLocaleString() : "Not set"}
+                  </span>
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <span style={{ fontWeight: "500", color: "#666" }}>Notes: </span>
+                  <span style={{ color: "#333" }}>{metadata.notes || "No notes"}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
