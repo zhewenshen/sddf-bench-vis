@@ -215,6 +215,7 @@ function App() {
   });
   const [pdCpuType, setPdCpuType] = useState("total"); // total, kernel, user
   const [customPlotCpuTypes, setCustomPlotCpuTypes] = useState({}); // { plotId: cpuType }
+  const [customPlotPdTypes, setCustomPlotPdTypes] = useState({}); // { plotId: "bar" or "line" }
   const [showTableView, setShowTableView] = useState(false);
   const [selectedRunForTable, setSelectedRunForTable] = useState(null);
 
@@ -1841,7 +1842,30 @@ function App() {
                           return pd.cpu_utilization || 0;
                         };
 
-                        customPlotData.push({
+                        const currentPlotType = customPlotPdTypes[customPlot.id] || "bar";
+
+                        customPlotData.push(currentPlotType === "bar" ? {
+                          x: run.cpuData.tests.map((test) => {
+                            const val = test.throughput_mbps * 1e6;
+                            if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+                            if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+                            if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+                            return val.toString();
+                          }),
+                          y: run.cpuData.tests.map(getCpuValue),
+                          type: "bar",
+                          name: `${run.name} (${pdName})`,
+                          marker: {
+                            color: usePDColors
+                              ? colors[runIndex % colors.length]
+                              : pdColors[pdIndex % pdColors.length],
+                          },
+                          hovertemplate:
+                            `<b>${run.name} (${pdName})</b><br>` +
+                            "Throughput: %{x}<br>" +
+                            "CPU: %{y:.2f}%<br>" +
+                            "<extra></extra>",
+                        } : {
                           x: run.cpuData.tests.map((test) => {
                             const val = test.throughput_mbps * 1e6;
                             if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
@@ -1899,6 +1923,7 @@ function App() {
                     gridcolor: "#e0e0e0",
                     showgrid: true,
                   },
+                  barmode: "group",
                   hovermode: "closest",
                   hoverlabel: {
                     bgcolor: "white",
@@ -1924,6 +1949,7 @@ function App() {
               } else if (customPlot.plotType === "cache") {
                 // Cache metrics plot
                 const selectedMetrics = customPlot.cacheMetrics || [];
+                const currentPlotType = customPlotPdTypes[customPlot.id] || "bar";
 
                 selectedMetrics.forEach((metricName, metricIndex) => {
                   selectedRunsData.forEach((run, runIndex) => {
@@ -1931,7 +1957,20 @@ function App() {
                       const metricData = run.cpuData.pmu_data[metricName];
                       const throughputs = run.cpuData.metadata?.test_throughputs || [];
 
-                      customPlotData.push({
+                      customPlotData.push(currentPlotType === "bar" ? {
+                        x: throughputs.map(val => `${val}M`),
+                        y: metricData,
+                        type: "bar",
+                        name: `${run.name} - ${metricName}`,
+                        marker: {
+                          color: colors[runIndex % colors.length],
+                        },
+                        hovertemplate:
+                          `<b>${run.name}</b><br>` +
+                          `${metricName}: %{y:,.0f}<br>` +
+                          "Throughput: %{x}<br>" +
+                          "<extra></extra>",
+                      } : {
                         x: throughputs.map(val => `${val}M`),
                         y: metricData,
                         type: "scatter",
@@ -1996,6 +2035,7 @@ function App() {
                     bordercolor: "#ddd",
                     borderwidth: 1,
                   },
+                  ...(currentPlotType === "bar" && { barmode: "group" }),
                   margin: { l: 80, r: 200, t: 80, b: 80 },
                   autosize: true,
                   paper_bgcolor: "white",
@@ -2156,7 +2196,7 @@ function App() {
 
               return (
                 <div key={customPlot.id}>
-                  {customPlot.plotType === "pds" && (
+                  {(customPlot.plotType === "pds" || customPlot.plotType === "cache") && (
                     <div
                       style={{
                         padding: "0.75rem 1rem",
@@ -2164,61 +2204,123 @@ function App() {
                         borderBottom: "2px solid #191918",
                         display: "flex",
                         alignItems: "center",
-                        gap: "0.5rem",
+                        gap: "1.5rem",
                       }}
                     >
-                      <label style={{
-                        fontWeight: 700,
-                        fontSize: "0.65rem",
-                        color: "#191918",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.8px"
-                      }}>
-                        CPU Type:
-                      </label>
-                      <div style={{ display: "flex", gap: "0.35rem" }}>
-                        {["total", "kernel", "user"].map((type) => {
-                          const currentType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
-                          return (
-                            <button
-                              key={type}
-                              onClick={() =>
-                                setCustomPlotCpuTypes({
-                                  ...customPlotCpuTypes,
-                                  [customPlot.id]: type,
-                                })
-                              }
-                              style={{
-                                padding: "0.35rem 0.75rem",
-                                borderRadius: "0",
-                                border: "1px solid #c0c0b8",
-                                fontSize: "0.7rem",
-                                fontWeight: "700",
-                                backgroundColor: currentType === type ? "#191918" : "#ffffff",
-                                color: currentType === type ? "#f4f4f2" : "#191918",
-                                cursor: "pointer",
-                                transition: "all 0.15s",
-                                textTransform: "uppercase",
-                                letterSpacing: "0.5px",
-                                boxShadow: currentType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
-                              }}
-                              onMouseEnter={(e) => {
-                                if (currentType !== type) {
-                                  e.currentTarget.style.background = "#f4f4f2";
-                                  e.currentTarget.style.borderColor = "#191918";
+                      {customPlot.plotType === "pds" && (
+                        <>
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                            <label style={{
+                              fontWeight: 700,
+                              fontSize: "0.65rem",
+                              color: "#191918",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.8px"
+                            }}>
+                              CPU Type:
+                            </label>
+                            <div style={{ display: "flex", gap: "0.35rem" }}>
+                              {["total", "kernel", "user"].map((type) => {
+                                const currentType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
+                                return (
+                                  <button
+                                    key={type}
+                                    onClick={() =>
+                                      setCustomPlotCpuTypes({
+                                        ...customPlotCpuTypes,
+                                        [customPlot.id]: type,
+                                      })
+                                    }
+                                    style={{
+                                      padding: "0.35rem 0.75rem",
+                                      borderRadius: "0",
+                                      border: "1px solid #c0c0b8",
+                                      fontSize: "0.7rem",
+                                      fontWeight: "700",
+                                      backgroundColor: currentType === type ? "#191918" : "#ffffff",
+                                      color: currentType === type ? "#f4f4f2" : "#191918",
+                                      cursor: "pointer",
+                                      transition: "all 0.15s",
+                                      textTransform: "uppercase",
+                                      letterSpacing: "0.5px",
+                                      boxShadow: currentType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      if (currentType !== type) {
+                                        e.currentTarget.style.background = "#f4f4f2";
+                                        e.currentTarget.style.borderColor = "#191918";
+                                      }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      if (currentType !== type) {
+                                        e.currentTarget.style.background = "#ffffff";
+                                        e.currentTarget.style.borderColor = "#c0c0b8";
+                                      }
+                                    }}
+                                  >
+                                    {type}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <label style={{
+                          fontWeight: 700,
+                          fontSize: "0.65rem",
+                          color: "#191918",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.8px"
+                        }}>
+                          Plot Type:
+                        </label>
+                        <div style={{ display: "flex", gap: "0.35rem" }}>
+                          {["bar", "line"].map((type) => {
+                            const currentPlotType = customPlotPdTypes[customPlot.id] || "bar";
+                            return (
+                              <button
+                                key={type}
+                                onClick={() =>
+                                  setCustomPlotPdTypes({
+                                    ...customPlotPdTypes,
+                                    [customPlot.id]: type,
+                                  })
                                 }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (currentType !== type) {
-                                  e.currentTarget.style.background = "#ffffff";
-                                  e.currentTarget.style.borderColor = "#c0c0b8";
-                                }
-                              }}
-                            >
-                              {type}
-                            </button>
-                          );
-                        })}
+                                style={{
+                                  padding: "0.35rem 0.75rem",
+                                  borderRadius: "0",
+                                  border: "1px solid #c0c0b8",
+                                  fontSize: "0.7rem",
+                                  fontWeight: "700",
+                                  backgroundColor: currentPlotType === type ? "#191918" : "#ffffff",
+                                  color: currentPlotType === type ? "#f4f4f2" : "#191918",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.5px",
+                                  boxShadow: currentPlotType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (currentPlotType !== type) {
+                                    e.currentTarget.style.background = "#f4f4f2";
+                                    e.currentTarget.style.borderColor = "#191918";
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (currentPlotType !== type) {
+                                    e.currentTarget.style.background = "#ffffff";
+                                    e.currentTarget.style.borderColor = "#c0c0b8";
+                                  }
+                                }}
+                              >
+                                {type}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}
