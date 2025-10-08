@@ -1,9 +1,10 @@
 {
-  "name": "test",
+  "id": "session-1759834360483",
+  "name": "Benchmark 2",
   "runs": [
     {
-      "id": 1759466145710,
-      "name": "Test Run",
+      "id": 1759834371942,
+      "name": "Run 1",
       "data": [
         {
           "Requested_Throughput": 10000000,
@@ -2147,11 +2148,17 @@
             29914027
           ]
         }
+      },
+      "metadata": {
+        "commit": "",
+        "hardware": "",
+        "dateTime": "2025-10-07T10:52",
+        "notes": ""
       }
     },
     {
-      "id": 1759466164688,
-      "name": "adssadsa",
+      "id": 1759834378738,
+      "name": "Run 2",
       "data": [
         {
           "Requested_Throughput": 10000000,
@@ -4295,9 +4302,16 @@
             19384145
           ]
         }
+      },
+      "metadata": {
+        "commit": "",
+        "hardware": "",
+        "dateTime": "2025-10-07T10:52",
+        "notes": ""
       }
     }
   ],
   "customPlots": [],
-  "savedAt": "2025-10-03T04:36:09.250Z"
+  "createdAt": "2025-10-07T10:52:40.483Z",
+  "updatedAt": "2025-10-07T11:14:33.849Z"
 }

@@ -240,74 +240,85 @@ function App() {
     }
   };
 
-  // Initialize sessions from localStorage
+  // Initialize sessions from backend
   useEffect(() => {
     fetch("http://localhost:3001/api/hello")
       .then((res) => res.json())
       .then((data) => setMessage(data.message))
       .catch((err) => console.error(err));
 
-    // Load sessions from localStorage
-    const savedSessions = localStorage.getItem("benchmark-sessions");
-    const savedCurrentId = localStorage.getItem("benchmark-current-session");
+    // Load sessions from backend
+    console.log("[PERSISTENCE] Loading sessions from backend...");
+    fetch("http://localhost:3001/api/sessions")
+      .then((res) => res.json())
+      .then((loadedSessions) => {
+        console.log("[PERSISTENCE] Loaded sessions:", Object.keys(loadedSessions).length, "sessions");
+        if (Object.keys(loadedSessions).length > 0) {
+          setSessions(loadedSessions);
 
-    if (savedSessions) {
-      try {
-        const parsedSessions = JSON.parse(savedSessions);
-        setSessions(parsedSessions);
+          // Load the last updated session or first available
+          const sortedIds = Object.keys(loadedSessions).sort(
+            (a, b) => new Date(loadedSessions[b].updatedAt) - new Date(loadedSessions[a].updatedAt)
+          );
+          const sessionId = sortedIds[0];
+          console.log("[PERSISTENCE] Loading most recent session:", sessionId);
 
-        // Load the last active session or first available
-        const sessionId = savedCurrentId || Object.keys(parsedSessions)[0];
-        if (sessionId && parsedSessions[sessionId]) {
           setCurrentSessionId(sessionId);
-          loadSession(sessionId, parsedSessions);
-          return;
+          loadSession(sessionId, loadedSessions);
+        } else {
+          console.log("[PERSISTENCE] No existing sessions, creating default session");
+          // Create default session with test data if no sessions exist
+          Promise.all([
+            fetch("/test_data.csv").then((res) => res.text()),
+            fetch("/test_data.json").then((res) => res.json()),
+          ])
+            .then(([csvText, jsonData]) => {
+              const data = parseCSV(csvText);
+              const defaultSessionId = `session-${Date.now()}`;
+              const defaultSession = {
+                id: defaultSessionId,
+                name: "Test Data",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                runs: [
+                  {
+                    id: Date.now(),
+                    name: "Test Run",
+                    data: data,
+                    cpuData: jsonData,
+                    metadata: {
+                      commit: "",
+                      hardware: "",
+                      dateTime: new Date().toISOString().slice(0, 16),
+                      notes: "",
+                    },
+                  },
+                ],
+                customPlots: [],
+              };
+
+              const newSessions = { [defaultSessionId]: defaultSession };
+              setSessions(newSessions);
+              setCurrentSessionId(defaultSessionId);
+              setRuns(defaultSession.runs);
+              setCustomPlots(defaultSession.customPlots);
+
+              // Save to backend
+              console.log("[PERSISTENCE] Saving default session to backend");
+              fetch("http://localhost:3001/api/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(defaultSession),
+              })
+                .then(() => console.log("[PERSISTENCE] Default session saved"))
+                .catch((err) => console.error("[PERSISTENCE] Failed to save default session:", err));
+            })
+            .catch((err) => console.error("Failed to load test data:", err));
         }
-      } catch (err) {
-        console.error("Failed to load sessions:", err);
-      }
-    }
-
-    // Create default session with test data if no sessions exist
-    Promise.all([
-      fetch("/test_data.csv").then((res) => res.text()),
-      fetch("/test_data.json").then((res) => res.json()),
-    ])
-      .then(([csvText, jsonData]) => {
-        const data = parseCSV(csvText);
-        const defaultSessionId = `session-${Date.now()}`;
-        const defaultSession = {
-          id: defaultSessionId,
-          name: "Test Data",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          runs: [
-            {
-              id: Date.now(),
-              name: "Test Run",
-              data: data,
-              cpuData: jsonData,
-              metadata: {
-                commit: "",
-                hardware: "",
-                dateTime: new Date().toISOString().slice(0, 16),
-                notes: "",
-              },
-            },
-          ],
-          customPlots: [],
-        };
-
-        const newSessions = { [defaultSessionId]: defaultSession };
-        setSessions(newSessions);
-        setCurrentSessionId(defaultSessionId);
-        setRuns(defaultSession.runs);
-        setCustomPlots(defaultSession.customPlots);
-
-        localStorage.setItem("benchmark-sessions", JSON.stringify(newSessions));
-        localStorage.setItem("benchmark-current-session", defaultSessionId);
       })
-      .catch((err) => console.error("Failed to load test data:", err));
+      .catch((err) => {
+        console.error("Failed to load sessions from backend:", err);
+      });
   }, []);
 
   // Helper to load a session's data
@@ -337,9 +348,19 @@ function App() {
       };
 
       setSessions(updatedSessions);
-      localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
-      localStorage.setItem("benchmark-current-session", currentSessionId);
-      setLastSaved(new Date());
+
+      // Save to backend
+      console.log("[PERSISTENCE] Autosaving session:", currentSessionId);
+      fetch("http://localhost:3001/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedSession),
+      })
+        .then(() => {
+          console.log("[PERSISTENCE] Autosave complete");
+          setLastSaved(new Date());
+        })
+        .catch((err) => console.error("[PERSISTENCE] Autosave failed:", err));
     }
   }, [runs, customPlots, currentSessionId]);
 
@@ -506,15 +527,23 @@ function App() {
     setCurrentSessionId(newSessionId);
     setRuns([]);
     setCustomPlots([]);
-    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
-    localStorage.setItem("benchmark-current-session", newSessionId);
+
+    // Save to backend
+    console.log("[PERSISTENCE] Creating new session:", newSessionId);
+    fetch("http://localhost:3001/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newSession),
+    })
+      .then(() => console.log("[PERSISTENCE] New session created"))
+      .catch((err) => console.error("[PERSISTENCE] Failed to create session:", err));
+
     setShowSessionMenu(false);
   };
 
   const switchSession = (sessionId) => {
     setCurrentSessionId(sessionId);
     loadSession(sessionId);
-    localStorage.setItem("benchmark-current-session", sessionId);
     setShowSessionMenu(false);
   };
 
@@ -529,7 +558,17 @@ function App() {
 
     const updatedSessions = { ...sessions, [currentSessionId]: updatedSession };
     setSessions(updatedSessions);
-    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+
+    // Save to backend
+    console.log("[PERSISTENCE] Renaming session:", currentSessionId);
+    fetch("http://localhost:3001/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatedSession),
+    })
+      .then(() => console.log("[PERSISTENCE] Session renamed"))
+      .catch((err) => console.error("[PERSISTENCE] Failed to rename session:", err));
+
     setShowRenameDialog(false);
     setRenameValue("");
   };
@@ -549,8 +588,17 @@ function App() {
     setSessions(updatedSessions);
     setCurrentSessionId(newSessionId);
     loadSession(newSessionId, updatedSessions);
-    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
-    localStorage.setItem("benchmark-current-session", newSessionId);
+
+    // Save to backend
+    console.log("[PERSISTENCE] Duplicating session:", newSessionId);
+    fetch("http://localhost:3001/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(duplicatedSession),
+    })
+      .then(() => console.log("[PERSISTENCE] Session duplicated"))
+      .catch((err) => console.error("[PERSISTENCE] Failed to duplicate session:", err));
+
     setShowSessionMenu(false);
   };
 
@@ -572,11 +620,18 @@ function App() {
       const newCurrentId = Object.keys(updatedSessions)[0];
       setCurrentSessionId(newCurrentId);
       loadSession(newCurrentId, updatedSessions);
-      localStorage.setItem("benchmark-current-session", newCurrentId);
     }
 
     setSessions(updatedSessions);
-    localStorage.setItem("benchmark-sessions", JSON.stringify(updatedSessions));
+
+    // Delete from backend
+    console.log("[PERSISTENCE] Deleting session:", sessionId);
+    fetch(`http://localhost:3001/api/sessions/${sessionId}`, {
+      method: "DELETE",
+    })
+      .then(() => console.log("[PERSISTENCE] Session deleted"))
+      .catch((err) => console.error("[PERSISTENCE] Failed to delete session:", err));
+
     setShowSessionMenu(false);
   };
 

@@ -1,23 +1,26 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { DualStorage } from "./storage/DualStorage.js";
 
 const app = express();
 const PORT = 3001;
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Create data directory if it doesn't exist
-const DATA_DIR = path.join(__dirname, "data");
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR);
-}
+// Storage configuration
+const ENABLE_FILE_STORAGE = process.env.ENABLE_FILE_STORAGE !== "false"; // default true
+const ENABLE_MONGODB_STORAGE = process.env.ENABLE_MONGODB_STORAGE === "true"; // default false
+
+console.log("[SERVER] Storage Configuration:");
+console.log(`  - File Storage: ${ENABLE_FILE_STORAGE ? "ENABLED" : "DISABLED"}`);
+console.log(`  - MongoDB Storage: ${ENABLE_MONGODB_STORAGE ? "ENABLED" : "DISABLED"}`);
+
+const storage = new DualStorage({
+  enableFile: ENABLE_FILE_STORAGE,
+  enableMongo: ENABLE_MONGODB_STORAGE,
+  mongoUri: process.env.MONGODB_URI,
+});
 
 app.use(cors());
 app.use(express.json({ limit: "100mb" }));
@@ -43,75 +46,63 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   }
 });
 
-// Save session (all runs + custom plots)
-app.post("/api/session/save", (req, res) => {
+// Save or update session
+app.post("/api/sessions", async (req, res) => {
   try {
-    const { name, runs, customPlots } = req.body;
+    const { id, name, runs, customPlots, createdAt, updatedAt } = req.body;
 
-    if (!name) {
-      return res.status(400).json({ error: "Session name is required" });
+    if (!id || !name) {
+      console.log("[BACKEND] Save failed: missing id or name");
+      return res.status(400).json({ error: "Session id and name are required" });
     }
 
     const sessionData = {
+      id,
       name,
       runs,
       customPlots,
-      savedAt: new Date().toISOString(),
+      createdAt: createdAt || new Date().toISOString(),
+      updatedAt: updatedAt || new Date().toISOString(),
     };
 
-    const filename = `${name.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_${Date.now()}.json`;
-    const filepath = path.join(DATA_DIR, filename);
+    console.log(`[BACKEND] Saving session: ${id} (${name}) - ${runs?.length || 0} runs, ${customPlots?.length || 0} plots`);
 
-    fs.writeFileSync(filepath, JSON.stringify(sessionData, null, 2));
-
-    res.json({ success: true, filename });
+    const result = await storage.saveSession(sessionData);
+    res.json(result);
   } catch (error) {
+    console.error("[BACKEND] Save error:", error);
     res
       .status(500)
       .json({ error: "Failed to save session", details: error.message });
   }
 });
 
-// List all saved sessions
-app.get("/api/session/list", (req, res) => {
+// List all sessions
+app.get("/api/sessions", async (req, res) => {
   try {
-    const files = fs.readdirSync(DATA_DIR);
-    const sessions = files
-      .filter((file) => file.endsWith(".json"))
-      .map((file) => {
-        const filepath = path.join(DATA_DIR, file);
-        const content = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-        return {
-          filename: file,
-          name: content.name,
-          savedAt: content.savedAt,
-          runCount: content.runs?.length || 0,
-          plotCount: content.customPlots?.length || 0,
-        };
-      })
-      .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-
+    const sessions = await storage.getAllSessions();
     res.json(sessions);
   } catch (error) {
+    console.error("[BACKEND] List sessions error:", error);
     res
       .status(500)
       .json({ error: "Failed to list sessions", details: error.message });
   }
 });
 
-// Load a session
-app.get("/api/session/load/:filename", (req, res) => {
+// Load a specific session
+app.get("/api/sessions/:id", async (req, res) => {
   try {
-    const { filename } = req.params;
-    const filepath = path.join(DATA_DIR, filename);
+    const { id } = req.params;
+    const sessionData = await storage.getSession(id);
 
-    if (!fs.existsSync(filepath)) {
+    if (!sessionData) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const sessionData = JSON.parse(fs.readFileSync(filepath, "utf-8"));
     res.json(sessionData);
   } catch (error) {
+    console.error("[BACKEND] Load session error:", error);
     res
       .status(500)
       .json({ error: "Failed to load session", details: error.message });
@@ -119,18 +110,19 @@ app.get("/api/session/load/:filename", (req, res) => {
 });
 
 // Delete a session
-app.delete("/api/session/delete/:filename", (req, res) => {
+app.delete("/api/sessions/:id", async (req, res) => {
   try {
-    const { filename } = req.params;
-    const filepath = path.join(DATA_DIR, filename);
+    const { id } = req.params;
+    const result = await storage.deleteSession(id);
 
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ error: "Session not found" });
+    if (!result.success) {
+      console.log(`[BACKEND] Delete failed: ${result.error}`);
+      return res.status(404).json({ error: result.error });
     }
 
-    fs.unlinkSync(filepath);
-    res.json({ success: true });
+    res.json(result);
   } catch (error) {
+    console.error("[BACKEND] Delete error:", error);
     res
       .status(500)
       .json({ error: "Failed to delete session", details: error.message });
