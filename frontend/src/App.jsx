@@ -18,12 +18,13 @@ import {
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
+  horizontalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToHorizontalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
 
 // Sortable Run Item Component
-function SortableRunItem({ run, index, colors, onDelete, onMoveUp, onMoveDown, onClick, isFirst, canMoveUp, canMoveDown }) {
+function SortableRunItem({ run, index, colors, onDelete, onRename, onMoveUp, onMoveDown, onClick, isFirst, canMoveUp, canMoveDown }) {
   const {
     attributes,
     listeners,
@@ -148,6 +149,16 @@ function SortableRunItem({ run, index, colors, onDelete, onMoveUp, onMoveDown, o
       <button
         onClick={(e) => {
           e.stopPropagation();
+          onRename();
+        }}
+        className="rename-btn"
+        aria-label="Rename run"
+      >
+        ✎
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
           onDelete();
         }}
         className="delete-btn"
@@ -156,6 +167,46 @@ function SortableRunItem({ run, index, colors, onDelete, onMoveUp, onMoveDown, o
         ×
       </button>
     </li>
+  );
+}
+
+// Sortable Tab Item Component for custom plot tabs
+function SortableTabItem({ plot, activeTab, onTabClick, onDelete, onEdit }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: plot.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <button
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`tab ${activeTab === `custom-${plot.id}` ? "active" : ""}`}
+      onClick={onTabClick}
+    >
+      {plot.name}
+      <span
+        className="tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        ×
+      </span>
+    </button>
   );
 }
 
@@ -190,6 +241,11 @@ function App() {
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 
+  // Run renaming
+  const [showRunRenameDialog, setShowRunRenameDialog] = useState(false);
+  const [runRenameValue, setRunRenameValue] = useState("");
+  const [runToRename, setRunToRename] = useState(null);
+
   const [runs, setRuns] = useState([]);
   const [runName, setRunName] = useState("");
   const [csvFile, setCsvFile] = useState(null);
@@ -205,23 +261,38 @@ function App() {
   const [activeTab, setActiveTab] = useState("throughput");
   const [customPlots, setCustomPlots] = useState([]);
   const [showPlotDialog, setShowPlotDialog] = useState(false);
+  const [editingPlotId, setEditingPlotId] = useState(null); // null if creating new, plot id if editing
   const [newPlot, setNewPlot] = useState({
     name: "",
     selectedRuns: [],
-    plotType: "xput-cpu", // "xput-cpu", "pds", or "cache"
+    plotType: "xput-cpu", // "xput-cpu", "rtt", "pds", or "cache"
     selectedPDs: [],
     cpuType: "total", // total, kernel, user
     cacheMetrics: [], // selected cache metrics for cache plots
+    baselineRunId: null, // baseline run for this plot
   });
+  const [defaultCpuType, setDefaultCpuType] = useState("total"); // total, kernel, user for default throughput plot
   const [pdCpuType, setPdCpuType] = useState("total"); // total, kernel, user
   const [customPlotCpuTypes, setCustomPlotCpuTypes] = useState({}); // { plotId: cpuType }
   const [customPlotPdTypes, setCustomPlotPdTypes] = useState({}); // { plotId: "bar" or "line" }
   const [showTableView, setShowTableView] = useState(false);
   const [selectedRunForTable, setSelectedRunForTable] = useState(null);
 
-  // Drag and drop sensors
+  // Drag and drop sensors for runs (immediate activation)
   const sensors = useSensors(
     useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  // Drag and drop sensors for tabs (with distance threshold to prevent accidental drags)
+  const tabSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px movement before drag activates
+      },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
@@ -232,6 +303,19 @@ function App() {
 
     if (active.id !== over.id) {
       setRuns((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
+
+  const handleTabDragEnd = (event) => {
+    const { active, over } = event;
+
+    if (active.id !== over.id) {
+      setCustomPlots((items) => {
         const oldIndex = items.findIndex((item) => item.id === active.id);
         const newIndex = items.findIndex((item) => item.id === over.id);
 
@@ -442,6 +526,20 @@ function App() {
     setRuns(newRuns);
   };
 
+  const renameRun = () => {
+    if (!runRenameValue.trim() || !runToRename) return;
+
+    setRuns(runs.map(run =>
+      run.id === runToRename.id
+        ? { ...run, name: runRenameValue.trim() }
+        : run
+    ));
+
+    setShowRunRenameDialog(false);
+    setRunRenameValue("");
+    setRunToRename(null);
+  };
+
   const handleAddCustomPlot = () => {
     if (!newPlot.name || newPlot.selectedRuns.length === 0) {
       alert("Please provide a plot name and select at least one run");
@@ -458,12 +556,24 @@ function App() {
       return;
     }
 
-    const plot = {
-      id: Date.now(),
-      ...newPlot,
-    };
+    if (editingPlotId) {
+      // Editing existing plot
+      setCustomPlots(customPlots.map(plot =>
+        plot.id === editingPlotId
+          ? { ...plot, ...newPlot }
+          : plot
+      ));
+      setEditingPlotId(null);
+    } else {
+      // Creating new plot
+      const plot = {
+        id: Date.now(),
+        ...newPlot,
+      };
+      setCustomPlots([...customPlots, plot]);
+      setActiveTab(`custom-${plot.id}`);
+    }
 
-    setCustomPlots([...customPlots, plot]);
     setShowPlotDialog(false);
     setNewPlot({
       name: "",
@@ -472,8 +582,22 @@ function App() {
       selectedPDs: [],
       cpuType: "total",
       cacheMetrics: [],
+      baselineRunId: null,
     });
-    setActiveTab(`custom-${plot.id}`);
+  };
+
+  const editCustomPlot = (plot) => {
+    setEditingPlotId(plot.id);
+    setNewPlot({
+      name: plot.name,
+      selectedRuns: plot.selectedRuns,
+      plotType: plot.plotType,
+      selectedPDs: plot.selectedPDs || [],
+      cpuType: plot.cpuType || "total",
+      cacheMetrics: plot.cacheMetrics || [],
+      baselineRunId: plot.baselineRunId || null,
+    });
+    setShowPlotDialog(true);
   };
 
   const deleteCustomPlot = (id) => {
@@ -637,7 +761,23 @@ function App() {
 
 
   // Prepare chart colors
-  const colors = ["#8884d8", "#82ca9d", "#ffc658", "#ff7c7c", "#a28bd4"];
+  const colors = [
+    "#8884d8", // blue
+    "#82ca9d", // green
+    "#ffc658", // orange
+    "#ff7c7c", // coral
+    "#a28bd4", // purple
+    "#4db8ff", // sky blue
+    "#ff8c94", // pink
+    "#95e1d3", // mint
+    "#f9ca24", // yellow
+    "#c56cf0", // light purple
+    "#ff6348", // tomato
+    "#70a1ff", // soft blue
+    "#7bed9f", // light green
+    "#ffa502", // amber
+    "#ff6b81", // rose
+  ];
 
   // Prepare Plotly data
   const plotData = runs.map((run, index) => ({
@@ -676,6 +816,14 @@ function App() {
   runs.forEach((run, index) => {
     if (run.cpuData?.tests) {
       // System CPU utilization
+      const getCpuValue = (test) => {
+        if (!test.system) return 0;
+        if (defaultCpuType === "kernel") return test.system.kernel_cpu_utilization || 0;
+        if (defaultCpuType === "user") return test.system.user_cpu_utilization || 0;
+        return test.system.cpu_utilization || 0;
+      };
+      const cpuTypeLabel = defaultCpuType.charAt(0).toUpperCase() + defaultCpuType.slice(1);
+
       const cpuTrace = {
         x: run.cpuData.tests.map((test) => {
           const val = test.throughput_mbps * 1e6;
@@ -684,10 +832,10 @@ function App() {
           if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
           return val.toString();
         }),
-        y: run.cpuData.tests.map((test) => test.system.cpu_utilization),
+        y: run.cpuData.tests.map(getCpuValue),
         type: "scatter",
         mode: "lines+markers",
-        name: `${run.name} (CPU)`,
+        name: `${run.name} (${cpuTypeLabel} CPU)`,
         yaxis: "y2",
         line: {
           color: colors[index % colors.length],
@@ -699,9 +847,9 @@ function App() {
           color: colors[index % colors.length],
         },
         hovertemplate:
-          `<b>${run.name} (CPU)</b><br>` +
+          `<b>${run.name} (${cpuTypeLabel} CPU)</b><br>` +
           "Throughput: %{x}<br>" +
-          "CPU: %{y:.2f}%<br>" +
+          `${cpuTypeLabel} CPU: %{y:.2f}%<br>` +
           "<extra></extra>",
       };
       plotData.push(cpuTrace);
@@ -711,16 +859,26 @@ function App() {
   // Prepare protection domain plot data
   const pdPlotData = [];
   const pdColors = [
-    "#8884d8",
-    "#82ca9d",
-    "#ffc658",
-    "#ff7c7c",
-    "#a28bd4",
-    "#ffb347",
-    "#b19cd9",
-    "#77dd77",
-    "#ff6961",
-    "#fdfd96",
+    "#8884d8", // blue
+    "#82ca9d", // green
+    "#ffc658", // orange
+    "#ff7c7c", // coral
+    "#a28bd4", // purple
+    "#ffb347", // peach
+    "#b19cd9", // lavender
+    "#77dd77", // pastel green
+    "#ff6961", // light red
+    "#fdfd96", // pastel yellow
+    "#4db8ff", // sky blue
+    "#ff8c94", // pink
+    "#95e1d3", // mint
+    "#f9ca24", // yellow
+    "#c56cf0", // light purple
+    "#ff6348", // tomato
+    "#70a1ff", // soft blue
+    "#7bed9f", // light green
+    "#ffa502", // amber
+    "#ff6b81", // rose
   ];
 
   // Collect all unique protection domains across all runs
@@ -801,6 +959,54 @@ function App() {
     });
   });
 
+  // Prepare RTT plot data with error bars
+  const rttPlotData = runs.map((run, index) => ({
+    x: run.data.map((d) => {
+      const val = d.Requested_Throughput;
+      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+      return val.toString();
+    }),
+    y: run.data.map((d) => d.Average_RTT),
+    error_y: {
+      type: 'data',
+      array: run.data.map((d) => d.Stdev_RTT),
+      visible: true,
+      color: colors[index % colors.length],
+      thickness: 2,
+      width: 4,
+    },
+    customdata: run.data.map((d) => [
+      d.Requested_Throughput,
+      d.Average_RTT,
+      d.Stdev_RTT,
+      d.Minimum_RTT,
+      d.Maximum_RTT,
+      d.Median_RTT,
+    ]),
+    hovertemplate:
+      "<b>%{fullData.name}</b><br>" +
+      "Throughput: %{customdata[0]:,} bps<br>" +
+      "Avg RTT: %{customdata[1]:.2f} ns<br>" +
+      "Std Dev: %{customdata[2]:.2f} ns<br>" +
+      "Min RTT: %{customdata[3]:.2f} ns<br>" +
+      "Max RTT: %{customdata[4]:.2f} ns<br>" +
+      "Median RTT: %{customdata[5]:.2f} ns<br>" +
+      "<extra></extra>",
+    type: "scatter",
+    mode: "lines+markers",
+    name: run.name,
+    line: {
+      color: colors[index % colors.length],
+      width: 3,
+    },
+    marker: {
+      size: 8,
+      color: colors[index % colors.length],
+    },
+  }));
+
   const pdPlotLayout = {
     title: {
       text: "Protection Domain CPU Utilisation",
@@ -818,6 +1024,51 @@ function App() {
     yaxis: {
       title: {
         text: "CPU Utilisation (%)",
+        font: { size: 16 },
+      },
+      rangemode: "tozero",
+      gridcolor: "#e0e0e0",
+      showgrid: true,
+    },
+    hovermode: "closest",
+    hoverlabel: {
+      bgcolor: "white",
+      bordercolor: "#333",
+      font: { size: 14 },
+    },
+    legend: {
+      orientation: "v",
+      yanchor: "top",
+      y: 1,
+      xanchor: "left",
+      x: 1.02,
+      bgcolor: "rgba(255, 255, 255, 0.9)",
+      bordercolor: "#ddd",
+      borderwidth: 1,
+    },
+    margin: { l: 80, r: 150, t: 80, b: 80 },
+    autosize: true,
+    paper_bgcolor: "white",
+    plot_bgcolor: "#fafafa",
+  };
+
+  const rttPlotLayout = {
+    title: {
+      text: "Round-Trip Time (RTT) with Error Bars",
+      font: { size: 24, color: "#333" },
+    },
+    xaxis: {
+      type: "category",
+      title: {
+        text: "Requested Throughput (bps)",
+        font: { size: 16 },
+      },
+      gridcolor: "#e0e0e0",
+      showgrid: true,
+    },
+    yaxis: {
+      title: {
+        text: "RTT (nanoseconds)",
         font: { size: 16 },
       },
       rangemode: "tozero",
@@ -1568,6 +1819,11 @@ function App() {
                       index={index}
                       colors={colors}
                       onDelete={() => deleteRun(run.id)}
+                      onRename={() => {
+                        setRunToRename(run);
+                        setRunRenameValue(run.name);
+                        setShowRunRenameDialog(true);
+                      }}
                       onMoveUp={() => moveRunUp(index)}
                       onMoveDown={() => moveRunDown(index)}
                       onClick={() => {
@@ -1596,6 +1852,12 @@ function App() {
               >
                 Throughput
               </button>
+              <button
+                className={`tab ${activeTab === "rtt" ? "active" : ""}`}
+                onClick={() => setActiveTab("rtt")}
+              >
+                RTT
+              </button>
               {runs.some(
                 (run) =>
                   run.cpuData?.tests?.[0]?.cores?.[0]?.protection_domains?.[0],
@@ -1607,27 +1869,33 @@ function App() {
                   Protection Domains
                 </button>
               )}
-              {customPlots.map((plot) => (
-                <button
-                  key={plot.id}
-                  className={`tab ${activeTab === `custom-${plot.id}` ? "active" : ""}`}
-                  onClick={() => setActiveTab(`custom-${plot.id}`)}
+              <DndContext
+                sensors={tabSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleTabDragEnd}
+                modifiers={[restrictToHorizontalAxis]}
+              >
+                <SortableContext
+                  items={customPlots.map(p => p.id)}
+                  strategy={horizontalListSortingStrategy}
                 >
-                  {plot.name}
-                  <span
-                    className="tab-close"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteCustomPlot(plot.id);
-                    }}
-                  >
-                    ×
-                  </span>
-                </button>
-              ))}
+                  {customPlots.map((plot) => (
+                    <SortableTabItem
+                      key={plot.id}
+                      plot={plot}
+                      activeTab={activeTab}
+                      onTabClick={() => setActiveTab(`custom-${plot.id}`)}
+                      onDelete={() => deleteCustomPlot(plot.id)}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
               <button
                 className="tab add-tab"
-                onClick={() => setShowPlotDialog(true)}
+                onClick={() => {
+                  setEditingPlotId(null);
+                  setShowPlotDialog(true);
+                }}
                 title="Add custom plot"
               >
                 +
@@ -1635,10 +1903,80 @@ function App() {
             </div>
 
             {activeTab === "throughput" && (
+              <>
+                <div
+                  style={{
+                    padding: "0.75rem 1rem",
+                    background: "#fafaf8",
+                    borderBottom: "2px solid #191918",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                  }}
+                >
+                  <label style={{
+                    fontWeight: 700,
+                    fontSize: "0.65rem",
+                    color: "#191918",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.8px"
+                  }}>
+                    CPU Type:
+                  </label>
+                  <div style={{ display: "flex", gap: "0.35rem" }}>
+                    {["total", "kernel", "user"].map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setDefaultCpuType(type)}
+                        style={{
+                          padding: "0.35rem 0.75rem",
+                          borderRadius: "0",
+                          border: "1px solid #c0c0b8",
+                          fontSize: "0.7rem",
+                          fontWeight: "700",
+                          backgroundColor: defaultCpuType === type ? "#191918" : "#ffffff",
+                          color: defaultCpuType === type ? "#f4f4f2" : "#191918",
+                          cursor: "pointer",
+                          transition: "all 0.15s",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                          boxShadow: defaultCpuType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                        }}
+                        onMouseEnter={(e) => {
+                          if (defaultCpuType !== type) {
+                            e.currentTarget.style.background = "#f4f4f2";
+                            e.currentTarget.style.borderColor = "#191918";
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (defaultCpuType !== type) {
+                            e.currentTarget.style.background = "#ffffff";
+                            e.currentTarget.style.borderColor = "#c0c0b8";
+                          }
+                        }}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="chart-section">
+                  <Plot
+                    data={plotData}
+                    layout={plotLayout}
+                    config={plotConfig}
+                    style={{ width: "100%", height: "100%" }}
+                    useResizeHandler={true}
+                  />
+                </div>
+              </>
+            )}
+
+            {activeTab === "rtt" && (
               <div className="chart-section">
                 <Plot
-                  data={plotData}
-                  layout={plotLayout}
+                  data={rttPlotData}
+                  layout={rttPlotLayout}
                   config={plotConfig}
                   style={{ width: "100%", height: "100%" }}
                   useResizeHandler={true}
@@ -1719,16 +2057,50 @@ function App() {
             {customPlots.map((customPlot) => {
               if (activeTab !== `custom-${customPlot.id}`) return null;
 
-              const selectedRunsData = runs.filter((run) =>
+              let selectedRunsData = runs.filter((run) =>
                 customPlot.selectedRuns.includes(run.id),
               );
+
+              // Reorder runs if baseline is specified
+              if (customPlot.baselineRunId) {
+                const baselineIndex = selectedRunsData.findIndex(
+                  (run) => run.id === customPlot.baselineRunId
+                );
+                if (baselineIndex > 0) {
+                  // Move baseline to front
+                  const baseline = selectedRunsData[baselineIndex];
+                  selectedRunsData = [
+                    baseline,
+                    ...selectedRunsData.slice(0, baselineIndex),
+                    ...selectedRunsData.slice(baselineIndex + 1)
+                  ];
+                }
+              }
 
               let customPlotData = [];
               let customLayout = {};
 
+              // Helper to get baseline suffix
+              const getBaselineSuffix = (runId) => {
+                return customPlot.baselineRunId && runId === customPlot.baselineRunId
+                  ? " [BASELINE]"
+                  : "";
+              };
+
               if (customPlot.plotType === "xput-cpu") {
                 // Throughput + CPU plot
+                const activeCpuType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
+                const getCpuValue = (test) => {
+                  if (!test.system) return 0;
+                  if (activeCpuType === "kernel") return test.system.kernel_cpu_utilization || 0;
+                  if (activeCpuType === "user") return test.system.user_cpu_utilization || 0;
+                  return test.system.cpu_utilization || 0;
+                };
+                const cpuTypeLabel = activeCpuType.charAt(0).toUpperCase() + activeCpuType.slice(1);
+
                 selectedRunsData.forEach((run, index) => {
+                  const baselineSuffix = getBaselineSuffix(run.id);
+
                   // Throughput trace
                   customPlotData.push({
                     x: run.data.map((d) => {
@@ -1744,13 +2116,13 @@ function App() {
                       d.Receive_Throughput,
                     ]),
                     hovertemplate:
-                      `<b>${run.name} (XPUT)</b><br>` +
+                      `<b>${run.name}${baselineSuffix} (XPUT)</b><br>` +
                       "Requested: %{customdata[0]:,} bps<br>" +
                       "Received: %{customdata[1]:,} bps<br>" +
                       "<extra></extra>",
                     type: "scatter",
                     mode: "lines+markers",
-                    name: `${run.name} (XPUT)`,
+                    name: `${run.name}${baselineSuffix} (XPUT)`,
                     yaxis: "y",
                     line: { color: colors[index % colors.length], width: 3 },
                     marker: { size: 8, color: colors[index % colors.length] },
@@ -1766,12 +2138,10 @@ function App() {
                         if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                         return val.toString();
                       }),
-                      y: run.cpuData.tests.map(
-                        (test) => test.system.cpu_utilization,
-                      ),
+                      y: run.cpuData.tests.map(getCpuValue),
                       type: "scatter",
                       mode: "lines+markers",
-                      name: `${run.name} (CPU)`,
+                      name: `${run.name}${baselineSuffix} (${cpuTypeLabel} CPU)`,
                       yaxis: "y2",
                       line: {
                         color: colors[index % colors.length],
@@ -1780,9 +2150,9 @@ function App() {
                       },
                       marker: { size: 8, color: colors[index % colors.length] },
                       hovertemplate:
-                        `<b>${run.name} (CPU)</b><br>` +
+                        `<b>${run.name}${baselineSuffix} (${cpuTypeLabel} CPU)</b><br>` +
                         "Throughput: %{x}<br>" +
-                        "CPU: %{y:.2f}%<br>" +
+                        `${cpuTypeLabel} CPU: %{y:.2f}%<br>` +
                         "<extra></extra>",
                     });
                   }
@@ -1842,6 +2212,104 @@ function App() {
                   paper_bgcolor: "white",
                   plot_bgcolor: "#fafafa",
                 };
+              } else if (customPlot.plotType === "rtt") {
+                // RTT plot with error bars
+                selectedRunsData.forEach((run, index) => {
+                  const baselineSuffix = getBaselineSuffix(run.id);
+
+                  customPlotData.push({
+                    x: run.data.map((d) => {
+                      const val = d.Requested_Throughput;
+                      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+                      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+                      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+                      return val.toString();
+                    }),
+                    y: run.data.map((d) => d.Average_RTT),
+                    error_y: {
+                      type: 'data',
+                      array: run.data.map((d) => d.Stdev_RTT),
+                      visible: true,
+                      color: colors[index % colors.length],
+                      thickness: 2,
+                      width: 4,
+                    },
+                    customdata: run.data.map((d) => [
+                      d.Requested_Throughput,
+                      d.Average_RTT,
+                      d.Stdev_RTT,
+                      d.Minimum_RTT,
+                      d.Maximum_RTT,
+                      d.Median_RTT,
+                    ]),
+                    hovertemplate:
+                      `<b>${run.name}${baselineSuffix}</b><br>` +
+                      "Throughput: %{customdata[0]:,} bps<br>" +
+                      "Avg RTT: %{customdata[1]:.2f} ns<br>" +
+                      "Std Dev: %{customdata[2]:.2f} ns<br>" +
+                      "Min RTT: %{customdata[3]:.2f} ns<br>" +
+                      "Max RTT: %{customdata[4]:.2f} ns<br>" +
+                      "Median RTT: %{customdata[5]:.2f} ns<br>" +
+                      "<extra></extra>",
+                    type: "scatter",
+                    mode: "lines+markers",
+                    name: `${run.name}${baselineSuffix}`,
+                    line: {
+                      color: colors[index % colors.length],
+                      width: 3,
+                    },
+                    marker: {
+                      size: 8,
+                      color: colors[index % colors.length],
+                    },
+                  });
+                });
+
+                customLayout = {
+                  title: {
+                    text: customPlot.name,
+                    font: { size: 24, color: "#333" },
+                  },
+                  xaxis: {
+                    type: "category",
+                    title: {
+                      text: "Requested Throughput (bps)",
+                      font: { size: 16 },
+                    },
+                    gridcolor: "#e0e0e0",
+                    showgrid: true,
+                  },
+                  yaxis: {
+                    title: {
+                      text: "RTT (nanoseconds)",
+                      font: { size: 16 },
+                    },
+                    rangemode: "tozero",
+                    gridcolor: "#e0e0e0",
+                    showgrid: true,
+                  },
+                  hovermode: "closest",
+                  hoverlabel: {
+                    bgcolor: "white",
+                    bordercolor: "#333",
+                    font: { size: 14 },
+                  },
+                  showlegend: true,
+                  legend: {
+                    orientation: "v",
+                    yanchor: "top",
+                    y: 1,
+                    xanchor: "left",
+                    x: 1.02,
+                    bgcolor: "rgba(255, 255, 255, 0.9)",
+                    bordercolor: "#ddd",
+                    borderwidth: 1,
+                  },
+                  margin: { l: 80, r: 150, t: 80, b: 80 },
+                  autosize: true,
+                  paper_bgcolor: "white",
+                  plot_bgcolor: "#fafafa",
+                };
               } else if (customPlot.plotType === "pds") {
                 // Protection domains plot
                 // Collect all unique PDs from selected runs
@@ -1873,6 +2341,8 @@ function App() {
 
                 selectedPDs.forEach((pdName, pdIndex) => {
                   selectedRunsData.forEach((run, runIndex) => {
+                    const baselineSuffix = getBaselineSuffix(run.id);
+
                     if (run.cpuData?.tests) {
                       const runPDs =
                         run.cpuData.tests[0]?.cores?.[0]?.protection_domains ||
@@ -1909,14 +2379,14 @@ function App() {
                           }),
                           y: run.cpuData.tests.map(getCpuValue),
                           type: "bar",
-                          name: `${run.name} (${pdName})`,
+                          name: `${run.name}${baselineSuffix} (${pdName})`,
                           marker: {
                             color: usePDColors
                               ? colors[runIndex % colors.length]
                               : pdColors[pdIndex % pdColors.length],
                           },
                           hovertemplate:
-                            `<b>${run.name} (${pdName})</b><br>` +
+                            `<b>${run.name}${baselineSuffix} (${pdName})</b><br>` +
                             "Throughput: %{x}<br>" +
                             "CPU: %{y:.2f}%<br>" +
                             "<extra></extra>",
@@ -1931,7 +2401,7 @@ function App() {
                           y: run.cpuData.tests.map(getCpuValue),
                           type: "scatter",
                           mode: "lines+markers",
-                          name: `${run.name} (${pdName})`,
+                          name: `${run.name}${baselineSuffix} (${pdName})`,
                           line: {
                             color: usePDColors
                               ? colors[runIndex % colors.length]
@@ -1948,7 +2418,7 @@ function App() {
                               : pdColors[pdIndex % pdColors.length],
                           },
                           hovertemplate:
-                            `<b>${run.name} (${pdName})</b><br>` +
+                            `<b>${run.name}${baselineSuffix} (${pdName})</b><br>` +
                             "Throughput: %{x}<br>" +
                             "CPU: %{y:.2f}%<br>" +
                             "<extra></extra>",
@@ -2008,6 +2478,8 @@ function App() {
 
                 selectedMetrics.forEach((metricName, metricIndex) => {
                   selectedRunsData.forEach((run, runIndex) => {
+                    const baselineSuffix = getBaselineSuffix(run.id);
+
                     if (run.cpuData?.pmu_data?.[metricName]) {
                       const metricData = run.cpuData.pmu_data[metricName];
                       const throughputs = run.cpuData.metadata?.test_throughputs || [];
@@ -2016,12 +2488,12 @@ function App() {
                         x: throughputs.map(val => `${val}M`),
                         y: metricData,
                         type: "bar",
-                        name: `${run.name} - ${metricName}`,
+                        name: `${run.name}${baselineSuffix} - ${metricName}`,
                         marker: {
                           color: colors[runIndex % colors.length],
                         },
                         hovertemplate:
-                          `<b>${run.name}</b><br>` +
+                          `<b>${run.name}${baselineSuffix}</b><br>` +
                           `${metricName}: %{y:,.0f}<br>` +
                           "Throughput: %{x}<br>" +
                           "<extra></extra>",
@@ -2030,7 +2502,7 @@ function App() {
                         y: metricData,
                         type: "scatter",
                         mode: "lines+markers",
-                        name: `${run.name} - ${metricName}`,
+                        name: `${run.name}${baselineSuffix} - ${metricName}`,
                         line: {
                           color: colors[runIndex % colors.length],
                           width: 2,
@@ -2041,7 +2513,7 @@ function App() {
                           color: colors[runIndex % colors.length],
                         },
                         hovertemplate:
-                          `<b>${run.name}</b><br>` +
+                          `<b>${run.name}${baselineSuffix}</b><br>` +
                           `${metricName}: %{y:,.0f}<br>` +
                           "Throughput: %{x}<br>" +
                           "<extra></extra>",
@@ -2251,17 +2723,77 @@ function App() {
 
               return (
                 <div key={customPlot.id}>
-                  {(customPlot.plotType === "pds" || customPlot.plotType === "cache") && (
-                    <div
-                      style={{
-                        padding: "0.75rem 1rem",
-                        background: "#fafaf8",
-                        borderBottom: "2px solid #191918",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "1.5rem",
-                      }}
-                    >
+                  <div
+                    style={{
+                      padding: "0.75rem 1rem",
+                      background: "#fafaf8",
+                      borderBottom: "2px solid #191918",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "1.5rem",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
+                      {customPlot.plotType === "xput-cpu" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                          <label style={{
+                            fontWeight: 700,
+                            fontSize: "0.65rem",
+                            color: "#191918",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.8px"
+                          }}>
+                            CPU Type:
+                          </label>
+                          <div style={{ display: "flex", gap: "0.35rem" }}>
+                            {["total", "kernel", "user"].map((type) => {
+                              const currentType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
+                              return (
+                                <button
+                                  key={type}
+                                  onClick={() =>
+                                    setCustomPlotCpuTypes({
+                                      ...customPlotCpuTypes,
+                                      [customPlot.id]: type,
+                                    })
+                                  }
+                                  style={{
+                                    padding: "0.35rem 0.75rem",
+                                    borderRadius: "0",
+                                    border: "1px solid #c0c0b8",
+                                    fontSize: "0.7rem",
+                                    fontWeight: "700",
+                                    backgroundColor: currentType === type ? "#191918" : "#ffffff",
+                                    color: currentType === type ? "#f4f4f2" : "#191918",
+                                    cursor: "pointer",
+                                    transition: "all 0.15s",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.5px",
+                                    boxShadow: currentType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (currentType !== type) {
+                                      e.currentTarget.style.background = "#f4f4f2";
+                                      e.currentTarget.style.borderColor = "#191918";
+                                    }
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (currentType !== type) {
+                                      e.currentTarget.style.background = "#ffffff";
+                                      e.currentTarget.style.borderColor = "#c0c0b8";
+                                    }
+                                  }}
+                                >
+                                  {type}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {(customPlot.plotType === "pds" || customPlot.plotType === "cache") && (
+                        <>
                       {customPlot.plotType === "pds" && (
                         <>
                           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -2377,8 +2909,36 @@ function App() {
                           })}
                         </div>
                       </div>
+                      </>
+                      )}
                     </div>
-                  )}
+                    <button
+                      onClick={() => editCustomPlot(customPlot)}
+                      style={{
+                        padding: "0.35rem 0.75rem",
+                        borderRadius: "0",
+                        border: "1px solid #c0c0b8",
+                        fontSize: "0.7rem",
+                        fontWeight: "700",
+                        backgroundColor: "#ffffff",
+                        color: "#191918",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.5px",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "#f4f4f2";
+                        e.currentTarget.style.borderColor = "#191918";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "#ffffff";
+                        e.currentTarget.style.borderColor = "#c0c0b8";
+                      }}
+                    >
+                      ✎ Edit Plot
+                    </button>
+                  </div>
                   <div className="chart-section" style={{ height: (pdStats || cacheStats) ? "calc(100vh - 320px)" : "calc(100vh - 220px)", minHeight: "500px" }}>
                     <Plot
                       data={customPlotData}
@@ -2554,10 +3114,22 @@ function App() {
       {showPlotDialog && (
         <div
           className="dialog-overlay"
-          onClick={() => setShowPlotDialog(false)}
+          onClick={() => {
+            setShowPlotDialog(false);
+            setEditingPlotId(null);
+            setNewPlot({
+              name: "",
+              selectedRuns: [],
+              plotType: "xput-cpu",
+              selectedPDs: [],
+              cpuType: "total",
+              cacheMetrics: [],
+              baselineRunId: null,
+            });
+          }}
         >
           <div className="dialog" onClick={(e) => e.stopPropagation()}>
-            <h2>Create Custom Plot</h2>
+            <h2>{editingPlotId ? "Edit Custom Plot" : "Create Custom Plot"}</h2>
 
             <div className="dialog-field">
               <label>Plot Name:</label>
@@ -2580,6 +3152,7 @@ function App() {
                 }
               >
                 <option value="xput-cpu">Throughput + CPU</option>
+                <option value="rtt">Round-Trip Time (RTT)</option>
                 <option value="pds">Protection Domains</option>
                 <option value="cache">Cache Metrics</option>
               </select>
@@ -2600,6 +3173,30 @@ function App() {
                 ))}
               </div>
             </div>
+
+            {newPlot.selectedRuns.length > 0 && (
+              <div className="dialog-field">
+                <label>Baseline Run (optional):</label>
+                <select
+                  value={newPlot.baselineRunId || ""}
+                  onChange={(e) =>
+                    setNewPlot({
+                      ...newPlot,
+                      baselineRunId: e.target.value ? Number(e.target.value) : null
+                    })
+                  }
+                >
+                  <option value="">Default ordering</option>
+                  {runs
+                    .filter((run) => newPlot.selectedRuns.includes(run.id))
+                    .map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {run.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
 
             {newPlot.plotType === "pds" &&
               (() => {
@@ -2675,13 +3272,25 @@ function App() {
 
             <div className="dialog-actions">
               <button
-                onClick={() => setShowPlotDialog(false)}
+                onClick={() => {
+                  setShowPlotDialog(false);
+                  setEditingPlotId(null);
+                  setNewPlot({
+                    name: "",
+                    selectedRuns: [],
+                    plotType: "xput-cpu",
+                    selectedPDs: [],
+                    cpuType: "total",
+                    cacheMetrics: [],
+                    baselineRunId: null,
+                  });
+                }}
                 className="btn-cancel"
               >
                 Cancel
               </button>
               <button onClick={handleAddCustomPlot} className="btn-create">
-                Create Plot
+                {editingPlotId ? "Save Changes" : "Create Plot"}
               </button>
             </div>
           </div>
@@ -2733,6 +3342,43 @@ function App() {
                 Cancel
               </button>
               <button onClick={renameSession} className="btn-create">
+                Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Run Dialog */}
+      {showRunRenameDialog && (
+        <div
+          className="dialog-overlay"
+          onClick={() => setShowRunRenameDialog(false)}
+        >
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h2>Rename Run</h2>
+            <div className="dialog-field">
+              <label>Run Name:</label>
+              <input
+                type="text"
+                value={runRenameValue}
+                onChange={(e) => setRunRenameValue(e.target.value)}
+                placeholder="Enter run name"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') renameRun();
+                  if (e.key === 'Escape') setShowRunRenameDialog(false);
+                }}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button
+                onClick={() => setShowRunRenameDialog(false)}
+                className="btn-cancel"
+              >
+                Cancel
+              </button>
+              <button onClick={renameRun} className="btn-create">
                 Rename
               </button>
             </div>
