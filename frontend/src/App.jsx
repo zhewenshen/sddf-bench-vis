@@ -265,18 +265,27 @@ function App() {
   const [newPlot, setNewPlot] = useState({
     name: "",
     selectedRuns: [],
-    plotType: "xput-cpu", // "xput-cpu", "rtt", "pds", or "cache"
+    plotType: "xput-cpu", // "xput-cpu", "rtt", "pds", "cache", or "misc"
     selectedPDs: [],
     cpuType: "total", // total, kernel, user
     cacheMetrics: [], // selected cache metrics for cache plots
     baselineRunId: null, // baseline run for this plot
+    miscPD: null, // selected PD for misc plot calculation
+    miscMetric: "cycles", // "cycles" or "kernel_entries" for misc plots
   });
   const [defaultCpuType, setDefaultCpuType] = useState("total"); // total, kernel, user for default throughput plot
   const [pdCpuType, setPdCpuType] = useState("total"); // total, kernel, user
   const [customPlotCpuTypes, setCustomPlotCpuTypes] = useState({}); // { plotId: cpuType }
   const [customPlotPdTypes, setCustomPlotPdTypes] = useState({}); // { plotId: "bar" or "line" }
+  const [customPlotMiscCycleTypes, setCustomPlotMiscCycleTypes] = useState({}); // { plotId: "total" | "kernel" | "user" }
   const [showTableView, setShowTableView] = useState(false);
   const [selectedRunForTable, setSelectedRunForTable] = useState(null);
+
+  // Plot style mode for research quality
+  const [plotStyleMode, setPlotStyleMode] = useState("current"); // "current", "paper", "presentation"
+
+  // Throughput range filter
+  const [throughputRange, setThroughputRange] = useState({ min: null, max: null });
 
   // Drag and drop sensors for runs (immediate activation)
   const sensors = useSensors(
@@ -583,6 +592,8 @@ function App() {
       cpuType: "total",
       cacheMetrics: [],
       baselineRunId: null,
+      miscPD: null,
+      miscMetric: "cycles",
     });
   };
 
@@ -596,6 +607,8 @@ function App() {
       cpuType: plot.cpuType || "total",
       cacheMetrics: plot.cacheMetrics || [],
       baselineRunId: plot.baselineRunId || null,
+      miscPD: plot.miscPD || null,
+      miscMetric: plot.miscMetric || "cycles",
     });
     setShowPlotDialog(true);
   };
@@ -760,8 +773,95 @@ function App() {
   };
 
 
-  // Prepare chart colors
-  const colors = [
+  // Research-quality color schemes and styling configurations
+  const getPlotStyling = (mode) => {
+    const configs = {
+      current: {
+        colors: [
+          "#8884d8", "#82ca9d", "#ffc658", "#ff7c7c", "#a28bd4",
+          "#4db8ff", "#ff8c94", "#95e1d3", "#f9ca24", "#c56cf0"
+        ],
+        lineWidth: 3,
+        markerSize: 8,
+        fontSize: { title: 24, axis: 16, tick: 12, legend: 12 },
+        plotBg: "#fafafa",
+        paperBg: "white",
+        gridColor: "#e0e0e0",
+        lineStyles: Array(10).fill("solid"),
+        markerSymbols: Array(10).fill("circle"),
+        fontFamily: "Arial, sans-serif"
+      },
+      paper: {
+        // Original vibrant colors - solid lines only, different markers
+        colors: [
+          "#8884d8", // blue
+          "#82ca9d", // green
+          "#ffc658", // orange
+          "#ff7c7c", // coral
+          "#a28bd4", // purple
+          "#4db8ff", // sky blue
+          "#ff8c94", // pink
+          "#95e1d3", // mint
+          "#f9ca24", // yellow
+          "#c56cf0"  // light purple
+        ],
+        lineWidth: 2.5,
+        markerSize: 10,
+        fontSize: { title: 18, axis: 14, tick: 11, legend: 11 },
+        plotBg: "white",
+        paperBg: "white",
+        gridColor: "#e0e0e0",
+        lineStyles: Array(10).fill("solid"),
+        markerSymbols: ["circle", "square", "diamond", "triangle-up", "cross", "star", "hexagon", "pentagon", "octagon", "bowtie"],
+        fontFamily: "Arial, sans-serif"
+      },
+      presentation: {
+        // Bold presentation mode - same original colors, everything bigger and bolder
+        colors: [
+          "#8884d8", // blue
+          "#82ca9d", // green
+          "#ffc658", // orange
+          "#ff7c7c", // coral
+          "#a28bd4", // purple
+          "#4db8ff", // sky blue
+          "#ff8c94", // pink
+          "#95e1d3", // mint
+          "#f9ca24", // yellow
+          "#c56cf0"  // light purple
+        ],
+        lineWidth: 5,
+        markerSize: 16,
+        fontSize: { title: 32, axis: 24, tick: 18, legend: 20 },
+        plotBg: "white",
+        paperBg: "white",
+        gridColor: "#d0d0d0",
+        lineStyles: Array(10).fill("solid"),
+        markerSymbols: ["circle", "square", "diamond", "triangle-up", "star", "cross", "hexagon", "pentagon", "octagon", "bowtie"],
+        fontFamily: "Arial, sans-serif"
+      }
+    };
+    return configs[mode] || configs.current;
+  };
+
+  const plotStyle = getPlotStyling(plotStyleMode);
+  const colors = plotStyle.colors;
+
+  // Helper function to get line configuration
+  const getLineConfig = (index, style = plotStyle) => ({
+    color: style.colors[index % style.colors.length],
+    width: style.lineWidth,
+    dash: style.lineStyles[index % style.lineStyles.length]
+  });
+
+  // Helper function to get marker configuration
+  const getMarkerConfig = (index, style = plotStyle) => ({
+    size: style.markerSize,
+    color: style.colors[index % style.colors.length],
+    symbol: style.markerSymbols[index % style.markerSymbols.length]
+  });
+
+  // Prepare chart colors (legacy compatibility)
+  const legacyColors = [
     "#8884d8", // blue
     "#82ca9d", // green
     "#ffc658", // orange
@@ -779,20 +879,47 @@ function App() {
     "#ff6b81", // rose
   ];
 
+  // Calculate discrete throughput values across all runs
+  const availableThroughputValues = runs.length > 0 ? (() => {
+    const allValues = new Set();
+    runs.forEach(run => {
+      run.data.forEach(d => allValues.add(d.Requested_Throughput));
+    });
+    return Array.from(allValues).sort((a, b) => a - b);
+  })() : [];
+
+  // Format throughput value for display
+  const formatThroughputValue = (val) => {
+    if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+    if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+    if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+    return val.toString();
+  };
+
+  // Filter function for throughput range
+  const filterByThroughputRange = (dataPoint) => {
+    const throughput = dataPoint.Requested_Throughput;
+    const minFilter = throughputRange.min !== null ? throughput >= throughputRange.min : true;
+    const maxFilter = throughputRange.max !== null ? throughput <= throughputRange.max : true;
+    return minFilter && maxFilter;
+  };
+
   // Prepare Plotly data
-  const plotData = runs.map((run, index) => ({
-    x: run.data.map((d) => {
-      const val = d.Requested_Throughput;
-      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
-      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
-      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
-      return val.toString();
-    }),
-    y: run.data.map((d) => d.Receive_Throughput),
-    customdata: run.data.map((d) => [
-      d.Requested_Throughput,
-      d.Receive_Throughput,
-    ]),
+  const plotData = runs.map((run, index) => {
+    const filteredData = run.data.filter(filterByThroughputRange);
+    return {
+      x: filteredData.map((d) => {
+        const val = d.Requested_Throughput;
+        if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+        if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+        if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+        return val.toString();
+      }),
+      y: filteredData.map((d) => d.Receive_Throughput),
+      customdata: filteredData.map((d) => [
+        d.Requested_Throughput,
+        d.Receive_Throughput,
+      ]),
     hovertemplate:
       "<b>%{fullData.name}</b><br>" +
       "Requested: %{customdata[0]:,} bps<br>" +
@@ -802,15 +929,10 @@ function App() {
     mode: "lines+markers",
     name: run.name,
     yaxis: "y",
-    line: {
-      color: colors[index % colors.length],
-      width: 3,
-    },
-    marker: {
-      size: 8,
-      color: colors[index % colors.length],
-    },
-  }));
+    line: getLineConfig(index),
+    marker: getMarkerConfig(index),
+  };
+  });
 
   // Add CPU utilization trace if available
   runs.forEach((run, index) => {
@@ -824,27 +946,34 @@ function App() {
       };
       const cpuTypeLabel = defaultCpuType.charAt(0).toUpperCase() + defaultCpuType.slice(1);
 
+      // Filter CPU tests by throughput range
+      const filteredCpuTests = run.cpuData.tests.filter((test) => {
+        const throughput = test.throughput_mbps * 1e6;
+        const minFilter = throughputRange.min !== null ? throughput >= throughputRange.min : true;
+        const maxFilter = throughputRange.max !== null ? throughput <= throughputRange.max : true;
+        return minFilter && maxFilter;
+      });
+
       const cpuTrace = {
-        x: run.cpuData.tests.map((test) => {
+        x: filteredCpuTests.map((test) => {
           const val = test.throughput_mbps * 1e6;
           if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
           if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
           if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
           return val.toString();
         }),
-        y: run.cpuData.tests.map(getCpuValue),
+        y: filteredCpuTests.map(getCpuValue),
         type: "scatter",
         mode: "lines+markers",
         name: `${run.name} (${cpuTypeLabel} CPU)`,
         yaxis: "y2",
         line: {
-          color: colors[index % colors.length],
-          width: 3,
+          ...getLineConfig(index),
           dash: "dash",
         },
         marker: {
-          size: 8,
-          color: colors[index % colors.length],
+          ...getMarkerConfig(index),
+          symbol: "diamond",
         },
         hovertemplate:
           `<b>${run.name} (${cpuTypeLabel} CPU)</b><br>` +
@@ -858,28 +987,8 @@ function App() {
 
   // Prepare protection domain plot data
   const pdPlotData = [];
-  const pdColors = [
-    "#8884d8", // blue
-    "#82ca9d", // green
-    "#ffc658", // orange
-    "#ff7c7c", // coral
-    "#a28bd4", // purple
-    "#ffb347", // peach
-    "#b19cd9", // lavender
-    "#77dd77", // pastel green
-    "#ff6961", // light red
-    "#fdfd96", // pastel yellow
-    "#4db8ff", // sky blue
-    "#ff8c94", // pink
-    "#95e1d3", // mint
-    "#f9ca24", // yellow
-    "#c56cf0", // light purple
-    "#ff6348", // tomato
-    "#70a1ff", // soft blue
-    "#7bed9f", // light green
-    "#ffa502", // amber
-    "#ff6b81", // rose
-  ];
+  // Use the same color scheme as the main plot
+  const pdColors = colors;
 
   // Collect all unique protection domains across all runs
   const allProtectionDomains = new Map();
@@ -932,21 +1041,15 @@ function App() {
             type: "scatter",
             mode: "lines+markers",
             name: `${run.name} (${pdName})`,
-            line: {
-              color: usePDColors
-                ? colors[runIndex % colors.length]
-                : pdColors[pdIndex % pdColors.length],
-              width: 3,
-              dash: usePDColors
-                ? "solid"
-                : dashStyles[runIndex % dashStyles.length],
-            },
-            marker: {
-              size: 8,
-              color: usePDColors
-                ? colors[runIndex % colors.length]
-                : pdColors[pdIndex % pdColors.length],
-            },
+            line: usePDColors
+              ? getLineConfig(runIndex)
+              : {
+                  ...getLineConfig(pdIndex),
+                  dash: dashStyles[runIndex % dashStyles.length],
+                },
+            marker: usePDColors
+              ? getMarkerConfig(runIndex)
+              : getMarkerConfig(pdIndex),
             hovertemplate:
               `<b>${run.name} (${pdName})</b><br>` +
               "Throughput: %{x}<br>" +
@@ -960,31 +1063,33 @@ function App() {
   });
 
   // Prepare RTT plot data with error bars
-  const rttPlotData = runs.map((run, index) => ({
-    x: run.data.map((d) => {
-      const val = d.Requested_Throughput;
-      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
-      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
-      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
-      return val.toString();
-    }),
-    y: run.data.map((d) => d.Average_RTT),
-    error_y: {
-      type: 'data',
-      array: run.data.map((d) => d.Stdev_RTT),
-      visible: true,
-      color: colors[index % colors.length],
-      thickness: 2,
-      width: 4,
-    },
-    customdata: run.data.map((d) => [
-      d.Requested_Throughput,
-      d.Average_RTT,
-      d.Stdev_RTT,
-      d.Minimum_RTT,
-      d.Maximum_RTT,
-      d.Median_RTT,
-    ]),
+  const rttPlotData = runs.map((run, index) => {
+    const filteredData = run.data.filter(filterByThroughputRange);
+    return {
+      x: filteredData.map((d) => {
+        const val = d.Requested_Throughput;
+        if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+        if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+        if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+        return val.toString();
+      }),
+      y: filteredData.map((d) => d.Average_RTT),
+      error_y: {
+        type: 'data',
+        array: filteredData.map((d) => d.Stdev_RTT),
+        visible: true,
+        color: colors[index % colors.length],
+        thickness: 2,
+        width: 4,
+      },
+      customdata: filteredData.map((d) => [
+        d.Requested_Throughput,
+        d.Average_RTT,
+        d.Stdev_RTT,
+        d.Minimum_RTT,
+        d.Maximum_RTT,
+        d.Median_RTT,
+      ]),
     hovertemplate:
       "<b>%{fullData.name}</b><br>" +
       "Throughput: %{customdata[0]:,} bps<br>" +
@@ -997,161 +1102,181 @@ function App() {
     type: "scatter",
     mode: "lines+markers",
     name: run.name,
-    line: {
-      color: colors[index % colors.length],
-      width: 3,
-    },
-    marker: {
-      size: 8,
-      color: colors[index % colors.length],
-    },
-  }));
+    line: getLineConfig(index),
+    marker: getMarkerConfig(index),
+  };
+  });
 
   const pdPlotLayout = {
     title: {
       text: "Protection Domain CPU Utilisation",
-      font: { size: 24, color: "#333" },
+      font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
     },
     xaxis: {
       type: "category",
       title: {
         text: "Requested Throughput (bps)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     yaxis: {
       title: {
         text: "CPU Utilisation (%)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
       rangemode: "tozero",
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     hovermode: "closest",
     hoverlabel: {
       bgcolor: "white",
       bordercolor: "#333",
-      font: { size: 14 },
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
     legend: {
       orientation: "v",
       yanchor: "top",
-      y: 1,
+      y: 0.98,
       xanchor: "left",
-      x: 1.02,
-      bgcolor: "rgba(255, 255, 255, 0.9)",
-      bordercolor: "#ddd",
+      x: 0.02,
+      bgcolor: "rgba(255, 255, 255, 0.85)",
+      bordercolor: "#ccc",
       borderwidth: 1,
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
-    margin: { l: 80, r: 150, t: 80, b: 80 },
+    margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
     autosize: true,
-    paper_bgcolor: "white",
-    plot_bgcolor: "#fafafa",
+    paper_bgcolor: plotStyle.paperBg,
+    plot_bgcolor: plotStyle.plotBg,
   };
 
   const rttPlotLayout = {
     title: {
       text: "Round-Trip Time (RTT) with Error Bars",
-      font: { size: 24, color: "#333" },
+      font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
     },
     xaxis: {
       type: "category",
       title: {
         text: "Requested Throughput (bps)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     yaxis: {
       title: {
         text: "RTT (nanoseconds)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
       rangemode: "tozero",
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     hovermode: "closest",
     hoverlabel: {
       bgcolor: "white",
       bordercolor: "#333",
-      font: { size: 14 },
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
     legend: {
       orientation: "v",
       yanchor: "top",
-      y: 1,
+      y: 0.98,
       xanchor: "left",
-      x: 1.02,
-      bgcolor: "rgba(255, 255, 255, 0.9)",
-      bordercolor: "#ddd",
+      x: 0.02,
+      bgcolor: "rgba(255, 255, 255, 0.85)",
+      bordercolor: "#ccc",
       borderwidth: 1,
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
-    margin: { l: 80, r: 150, t: 80, b: 80 },
+    margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
     autosize: true,
-    paper_bgcolor: "white",
-    plot_bgcolor: "#fafafa",
+    paper_bgcolor: plotStyle.paperBg,
+    plot_bgcolor: plotStyle.plotBg,
   };
 
   const plotLayout = {
     title: {
       text: "Throughput Comparison",
-      font: { size: 24, color: "#333" },
+      font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
     },
     xaxis: {
       type: "category",
       title: {
         text: "Requested Throughput (bps)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     yaxis: {
       title: {
         text: "Received Throughput (bps)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
       tickformat: ".2s",
-      gridcolor: "#e0e0e0",
+      gridcolor: plotStyle.gridColor,
       showgrid: true,
       rangemode: "tozero",
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     yaxis2: {
       title: {
         text: "CPU Utilisation (%)",
-        font: { size: 16 },
+        font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
       },
       overlaying: "y",
       side: "right",
       range: [0, 105],
       gridcolor: "transparent",
       showgrid: false,
+      tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
     },
     hovermode: "closest",
     hoverlabel: {
       bgcolor: "white",
       bordercolor: "#333",
-      font: { size: 14 },
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
     legend: {
       orientation: "v",
       yanchor: "top",
-      y: 1,
+      y: 0.98,
       xanchor: "left",
-      x: 1.02,
-      bgcolor: "rgba(255, 255, 255, 0.9)",
-      bordercolor: "#ddd",
+      x: 0.02,
+      bgcolor: "rgba(255, 255, 255, 0.85)",
+      bordercolor: "#ccc",
       borderwidth: 1,
+      font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
     },
-    margin: { l: 80, r: 150, t: 80, b: 80 },
+    margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
     autosize: true,
-    paper_bgcolor: "white",
-    plot_bgcolor: "#fafafa",
+    paper_bgcolor: plotStyle.paperBg,
+    plot_bgcolor: plotStyle.plotBg,
   };
 
   const plotConfig = {
@@ -1160,11 +1285,11 @@ function App() {
     displaylogo: false,
     modeBarButtonsToRemove: ["lasso2d", "select2d"],
     toImageButtonOptions: {
-      format: "png",
-      filename: "throughput_benchmark",
-      height: 1000,
-      width: 1600,
-      scale: 2,
+      format: "svg",
+      filename: "benchmark_plot",
+      height: plotStyleMode === "presentation" ? 1200 : 1000,
+      width: plotStyleMode === "presentation" ? 2000 : 1600,
+      scale: plotStyleMode === "paper" ? 3 : 2,
     },
   };
 
@@ -1462,6 +1587,41 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* Plot Style Mode Selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span style={{ fontSize: "0.75rem", color: "#6b6b68", fontWeight: "500", textTransform: "uppercase", letterSpacing: "0.5px" }}>Plot Style:</span>
+            <select
+              value={plotStyleMode}
+              onChange={(e) => setPlotStyleMode(e.target.value)}
+              style={{
+                padding: "0.35rem 0.65rem",
+                background: "#fafaf8",
+                border: "1px solid #e0e0d8",
+                borderRadius: "2px",
+                fontSize: "0.8rem",
+                fontWeight: "600",
+                color: "#191918",
+                cursor: "pointer",
+                transition: "all 0.15s",
+                fontFamily: "monospace"
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#f4f4f2";
+                e.currentTarget.style.borderColor = "#191918";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "#fafaf8";
+                e.currentTarget.style.borderColor = "#e0e0d8";
+              }}
+              title="Choose plot styling: Current (colorful), Paper (publication-ready), or Presentation (high-contrast)"
+            >
+              <option value="current">Current</option>
+              <option value="paper">Paper</option>
+              <option value="presentation">Presentation</option>
+            </select>
+          </div>
+
           <button
             onClick={async (event) => {
               const btn = event.currentTarget;
@@ -1960,6 +2120,114 @@ function App() {
                     ))}
                   </div>
                 </div>
+
+                {/* Throughput Range Filter */}
+                {runs.length > 0 && (
+                  <div
+                    style={{
+                      padding: "0.75rem 1rem",
+                      background: "#fafaf8",
+                      borderBottom: "2px solid #191918",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "1rem",
+                    }}
+                  >
+                    <label style={{
+                      fontWeight: 700,
+                      fontSize: "0.65rem",
+                      color: "#191918",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.8px"
+                    }}>
+                      Throughput Range:
+                    </label>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                        <span style={{ fontSize: "0.65rem", color: "#6b6b68" }}>Min:</span>
+                        <select
+                          value={throughputRange.min || ""}
+                          onChange={(e) => setThroughputRange({
+                            ...throughputRange,
+                            min: e.target.value ? Number(e.target.value) : null
+                          })}
+                          style={{
+                            width: "100px",
+                            padding: "0.35rem 0.5rem",
+                            border: "1px solid #c0c0b8",
+                            borderRadius: "0",
+                            fontSize: "0.7rem",
+                            fontFamily: "monospace",
+                            backgroundColor: "#ffffff",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <option value="">All</option>
+                          {availableThroughputValues.map(val => (
+                            <option key={val} value={val}>
+                              {formatThroughputValue(val)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <span style={{ fontSize: "0.65rem", color: "#6b6b68" }}>–</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                        <span style={{ fontSize: "0.65rem", color: "#6b6b68" }}>Max:</span>
+                        <select
+                          value={throughputRange.max || ""}
+                          onChange={(e) => setThroughputRange({
+                            ...throughputRange,
+                            max: e.target.value ? Number(e.target.value) : null
+                          })}
+                          style={{
+                            width: "100px",
+                            padding: "0.35rem 0.5rem",
+                            border: "1px solid #c0c0b8",
+                            borderRadius: "0",
+                            fontSize: "0.7rem",
+                            fontFamily: "monospace",
+                            backgroundColor: "#ffffff",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <option value="">All</option>
+                          {availableThroughputValues.map(val => (
+                            <option key={val} value={val}>
+                              {formatThroughputValue(val)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        onClick={() => setThroughputRange({ min: null, max: null })}
+                        style={{
+                          padding: "0.35rem 0.75rem",
+                          borderRadius: "0",
+                          border: "1px solid #c0c0b8",
+                          fontSize: "0.7rem",
+                          fontWeight: "700",
+                          backgroundColor: "#ffffff",
+                          color: "#191918",
+                          cursor: "pointer",
+                          transition: "all 0.15s",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px"
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = "#f4f4f2";
+                          e.currentTarget.style.borderColor = "#191918";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "#ffffff";
+                          e.currentTarget.style.borderColor = "#c0c0b8";
+                        }}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="chart-section">
                   <Plot
                     data={plotData}
@@ -2101,17 +2369,20 @@ function App() {
                 selectedRunsData.forEach((run, index) => {
                   const baselineSuffix = getBaselineSuffix(run.id);
 
+                  // Filter data by throughput range
+                  const filteredData = run.data.filter(filterByThroughputRange);
+
                   // Throughput trace
                   customPlotData.push({
-                    x: run.data.map((d) => {
+                    x: filteredData.map((d) => {
                       const val = d.Requested_Throughput;
                       if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
                       if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
                       if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                       return val.toString();
                     }),
-                    y: run.data.map((d) => d.Receive_Throughput),
-                    customdata: run.data.map((d) => [
+                    y: filteredData.map((d) => d.Receive_Throughput),
+                    customdata: filteredData.map((d) => [
                       d.Requested_Throughput,
                       d.Receive_Throughput,
                     ]),
@@ -2124,31 +2395,39 @@ function App() {
                     mode: "lines+markers",
                     name: `${run.name}${baselineSuffix} (XPUT)`,
                     yaxis: "y",
-                    line: { color: colors[index % colors.length], width: 3 },
-                    marker: { size: 8, color: colors[index % colors.length] },
+                    line: getLineConfig(index),
+                    marker: getMarkerConfig(index),
                   });
 
                   // CPU trace
                   if (run.cpuData?.tests) {
+                    // Filter CPU tests by throughput range
+                    const filteredCpuTests = run.cpuData.tests.filter((test) => {
+                      const throughput = test.throughput_mbps * 1e6;
+                      return filterByThroughputRange({ Requested_Throughput: throughput });
+                    });
+
                     customPlotData.push({
-                      x: run.cpuData.tests.map((test) => {
+                      x: filteredCpuTests.map((test) => {
                         const val = test.throughput_mbps * 1e6;
                         if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
                         if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
                         if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                         return val.toString();
                       }),
-                      y: run.cpuData.tests.map(getCpuValue),
+                      y: filteredCpuTests.map(getCpuValue),
                       type: "scatter",
                       mode: "lines+markers",
                       name: `${run.name}${baselineSuffix} (${cpuTypeLabel} CPU)`,
                       yaxis: "y2",
                       line: {
-                        color: colors[index % colors.length],
-                        width: 3,
+                        ...getLineConfig(index),
                         dash: "dash",
                       },
-                      marker: { size: 8, color: colors[index % colors.length] },
+                      marker: {
+                        ...getMarkerConfig(index),
+                        symbol: "diamond",
+                      },
                       hovertemplate:
                         `<b>${run.name}${baselineSuffix} (${cpuTypeLabel} CPU)</b><br>` +
                         "Throughput: %{x}<br>" +
@@ -2161,29 +2440,32 @@ function App() {
                 customLayout = {
                   title: {
                     text: customPlot.name,
-                    font: { size: 24, color: "#333" },
+                    font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
                   },
                   xaxis: {
                     type: "category",
                     title: {
                       text: "Requested Throughput (bps)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   yaxis: {
                     title: {
                       text: "Received Throughput (bps)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
                     tickformat: ".2s",
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
                     rangemode: "tozero",
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   yaxis2: {
-                    title: { text: "CPU Utilisation (%)", font: { size: 16 } },
+                    title: { text: "CPU Utilisation (%)", font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily } },
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                     overlaying: "y",
                     side: "right",
                     range: [0, 105],
@@ -2194,47 +2476,56 @@ function App() {
                   hoverlabel: {
                     bgcolor: "white",
                     bordercolor: "#333",
-                    font: { size: 14 },
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
                   showlegend: true,
                   legend: {
                     orientation: "v",
                     yanchor: "top",
-                    y: 1,
+                    y: 0.98,
                     xanchor: "left",
-                    x: 1.02,
-                    bgcolor: "rgba(255, 255, 255, 0.9)",
-                    bordercolor: "#ddd",
+                    x: 0.02,
+                    bgcolor: "rgba(255, 255, 255, 0.85)",
+                    bordercolor: "#ccc",
                     borderwidth: 1,
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
-                  margin: { l: 80, r: 150, t: 80, b: 80 },
+                  margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
                   autosize: true,
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "#fafafa",
+                  paper_bgcolor: plotStyle.paperBg,
+                  plot_bgcolor: plotStyle.plotBg,
                 };
               } else if (customPlot.plotType === "rtt") {
                 // RTT plot with error bars
                 selectedRunsData.forEach((run, index) => {
                   const baselineSuffix = getBaselineSuffix(run.id);
 
+                  // Filter data by throughput range
+                  const filteredData = run.data.filter(filterByThroughputRange);
+
                   customPlotData.push({
-                    x: run.data.map((d) => {
+                    x: filteredData.map((d) => {
                       const val = d.Requested_Throughput;
                       if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
                       if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
                       if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                       return val.toString();
                     }),
-                    y: run.data.map((d) => d.Average_RTT),
+                    y: filteredData.map((d) => d.Average_RTT),
                     error_y: {
                       type: 'data',
-                      array: run.data.map((d) => d.Stdev_RTT),
+                      array: filteredData.map((d) => d.Stdev_RTT),
                       visible: true,
                       color: colors[index % colors.length],
                       thickness: 2,
                       width: 4,
                     },
-                    customdata: run.data.map((d) => [
+                    customdata: filteredData.map((d) => [
                       d.Requested_Throughput,
                       d.Average_RTT,
                       d.Stdev_RTT,
@@ -2254,61 +2545,63 @@ function App() {
                     type: "scatter",
                     mode: "lines+markers",
                     name: `${run.name}${baselineSuffix}`,
-                    line: {
-                      color: colors[index % colors.length],
-                      width: 3,
-                    },
-                    marker: {
-                      size: 8,
-                      color: colors[index % colors.length],
-                    },
+                    line: getLineConfig(index),
+                    marker: getMarkerConfig(index),
                   });
                 });
 
                 customLayout = {
                   title: {
                     text: customPlot.name,
-                    font: { size: 24, color: "#333" },
+                    font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
                   },
                   xaxis: {
                     type: "category",
                     title: {
                       text: "Requested Throughput (bps)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   yaxis: {
                     title: {
                       text: "RTT (nanoseconds)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
                     rangemode: "tozero",
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   hovermode: "closest",
                   hoverlabel: {
                     bgcolor: "white",
                     bordercolor: "#333",
-                    font: { size: 14 },
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
                   showlegend: true,
                   legend: {
                     orientation: "v",
                     yanchor: "top",
-                    y: 1,
+                    y: 0.98,
                     xanchor: "left",
-                    x: 1.02,
-                    bgcolor: "rgba(255, 255, 255, 0.9)",
-                    bordercolor: "#ddd",
+                    x: 0.02,
+                    bgcolor: "rgba(255, 255, 255, 0.85)",
+                    bordercolor: "#ccc",
                     borderwidth: 1,
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
-                  margin: { l: 80, r: 150, t: 80, b: 80 },
+                  margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
                   autosize: true,
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "#fafafa",
+                  paper_bgcolor: plotStyle.paperBg,
+                  plot_bgcolor: plotStyle.plotBg,
                 };
               } else if (customPlot.plotType === "pds") {
                 // Protection domains plot
@@ -2337,6 +2630,19 @@ function App() {
                   "longdash",
                   "longdashdot",
                 ];
+
+                // Bar patterns for distinguishing PDs within same run
+                const barPatterns = [
+                  "", // solid (no pattern)
+                  "/", // diagonal lines
+                  "\\", // diagonal lines opposite
+                  "x", // crossed diagonals
+                  "-", // horizontal lines
+                  "|", // vertical lines
+                  "+", // crossed horizontal/vertical
+                  ".", // dots
+                ];
+
                 const usePDColors = selectedPDs.length === 1;
 
                 selectedPDs.forEach((pdName, pdIndex) => {
@@ -2369,21 +2675,32 @@ function App() {
 
                         const currentPlotType = customPlotPdTypes[customPlot.id] || "bar";
 
+                        // Filter CPU tests by throughput range
+                        const filteredCpuTests = run.cpuData.tests.filter((test) => {
+                          const throughput = test.throughput_mbps * 1e6;
+                          return filterByThroughputRange({ Requested_Throughput: throughput });
+                        });
+
                         customPlotData.push(currentPlotType === "bar" ? {
-                          x: run.cpuData.tests.map((test) => {
+                          x: filteredCpuTests.map((test) => {
                             const val = test.throughput_mbps * 1e6;
                             if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
                             if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
                             if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                             return val.toString();
                           }),
-                          y: run.cpuData.tests.map(getCpuValue),
+                          y: filteredCpuTests.map(getCpuValue),
                           type: "bar",
                           name: `${run.name}${baselineSuffix} (${pdName})`,
                           marker: {
-                            color: usePDColors
-                              ? colors[runIndex % colors.length]
-                              : pdColors[pdIndex % pdColors.length],
+                            color: colors[runIndex % colors.length],
+                            pattern: {
+                              shape: barPatterns[pdIndex % barPatterns.length],
+                              bgcolor: colors[runIndex % colors.length],
+                              fgcolor: "rgba(0,0,0,0.3)",
+                              size: 8,
+                              solidity: 0.5,
+                            },
                           },
                           hovertemplate:
                             `<b>${run.name}${baselineSuffix} (${pdName})</b><br>` +
@@ -2391,32 +2708,26 @@ function App() {
                             "CPU: %{y:.2f}%<br>" +
                             "<extra></extra>",
                         } : {
-                          x: run.cpuData.tests.map((test) => {
+                          x: filteredCpuTests.map((test) => {
                             const val = test.throughput_mbps * 1e6;
                             if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
                             if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
                             if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
                             return val.toString();
                           }),
-                          y: run.cpuData.tests.map(getCpuValue),
+                          y: filteredCpuTests.map(getCpuValue),
                           type: "scatter",
                           mode: "lines+markers",
                           name: `${run.name}${baselineSuffix} (${pdName})`,
-                          line: {
-                            color: usePDColors
-                              ? colors[runIndex % colors.length]
-                              : pdColors[pdIndex % pdColors.length],
-                            width: 3,
-                            dash: usePDColors
-                              ? "solid"
-                              : dashStyles[runIndex % dashStyles.length],
-                          },
-                          marker: {
-                            size: 8,
-                            color: usePDColors
-                              ? colors[runIndex % colors.length]
-                              : pdColors[pdIndex % pdColors.length],
-                          },
+                          line: usePDColors
+                            ? getLineConfig(runIndex)
+                            : {
+                                ...getLineConfig(pdIndex),
+                                dash: dashStyles[runIndex % dashStyles.length],
+                              },
+                          marker: usePDColors
+                            ? getMarkerConfig(runIndex)
+                            : getMarkerConfig(pdIndex),
                           hovertemplate:
                             `<b>${run.name}${baselineSuffix} (${pdName})</b><br>` +
                             "Throughput: %{x}<br>" +
@@ -2431,21 +2742,23 @@ function App() {
                 customLayout = {
                   title: {
                     text: customPlot.name,
-                    font: { size: 24, color: "#333" },
+                    font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
                   },
                   xaxis: {
                     type: "category",
                     title: {
                       text: "Requested Throughput (bps)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   yaxis: {
-                    title: { text: "CPU Utilisation (%)", font: { size: 16 } },
+                    title: { text: "CPU Utilisation (%)", font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily } },
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                     rangemode: "tozero",
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
                   },
                   barmode: "group",
@@ -2453,23 +2766,29 @@ function App() {
                   hoverlabel: {
                     bgcolor: "white",
                     bordercolor: "#333",
-                    font: { size: 14 },
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
                   showlegend: true,
                   legend: {
                     orientation: "v",
                     yanchor: "top",
-                    y: 1,
+                    y: 0.98,
                     xanchor: "left",
-                    x: 1.02,
-                    bgcolor: "rgba(255, 255, 255, 0.9)",
-                    bordercolor: "#ddd",
+                    x: 0.02,
+                    bgcolor: "rgba(255, 255, 255, 0.85)",
+                    bordercolor: "#ccc",
                     borderwidth: 1,
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
-                  margin: { l: 80, r: 150, t: 80, b: 80 },
+                  margin: {
+      l: 80,
+      r: 80,
+      t: plotStyleMode === "presentation" ? 100 : 80,
+      b: plotStyleMode === "presentation" ? 100 : 80
+    },
                   autosize: true,
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "#fafafa",
+                  paper_bgcolor: plotStyle.paperBg,
+                  plot_bgcolor: plotStyle.plotBg,
                 };
               } else if (customPlot.plotType === "cache") {
                 // Cache metrics plot
@@ -2484,9 +2803,20 @@ function App() {
                       const metricData = run.cpuData.pmu_data[metricName];
                       const throughputs = run.cpuData.metadata?.test_throughputs || [];
 
+                      // Filter by throughput range
+                      const filteredIndices = [];
+                      throughputs.forEach((val, idx) => {
+                        const throughputBps = val * 1e6; // Convert Mbps to bps
+                        if (filterByThroughputRange({ Requested_Throughput: throughputBps })) {
+                          filteredIndices.push(idx);
+                        }
+                      });
+                      const filteredThroughputs = filteredIndices.map(idx => throughputs[idx]);
+                      const filteredMetricData = filteredIndices.map(idx => metricData[idx]);
+
                       customPlotData.push(currentPlotType === "bar" ? {
-                        x: throughputs.map(val => `${val}M`),
-                        y: metricData,
+                        x: filteredThroughputs.map(val => `${val}M`),
+                        y: filteredMetricData,
                         type: "bar",
                         name: `${run.name}${baselineSuffix} - ${metricName}`,
                         marker: {
@@ -2498,20 +2828,16 @@ function App() {
                           "Throughput: %{x}<br>" +
                           "<extra></extra>",
                       } : {
-                        x: throughputs.map(val => `${val}M`),
-                        y: metricData,
+                        x: filteredThroughputs.map(val => `${val}M`),
+                        y: filteredMetricData,
                         type: "scatter",
                         mode: "lines+markers",
                         name: `${run.name}${baselineSuffix} - ${metricName}`,
                         line: {
-                          color: colors[runIndex % colors.length],
-                          width: 2,
+                          ...getLineConfig(runIndex),
                           dash: metricIndex === 0 ? "solid" : metricIndex === 1 ? "dash" : "dot",
                         },
-                        marker: {
-                          size: 6,
-                          color: colors[runIndex % colors.length],
-                        },
+                        marker: getMarkerConfig(runIndex),
                         hovertemplate:
                           `<b>${run.name}${baselineSuffix}</b><br>` +
                           `${metricName}: %{y:,.0f}<br>` +
@@ -2525,50 +2851,464 @@ function App() {
                 customLayout = {
                   title: {
                     text: customPlot.name,
-                    font: { size: 24, color: "#333" },
+                    font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
                   },
                   xaxis: {
                     type: "category",
                     title: {
                       text: "Throughput (Mbps)",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   yaxis: {
                     title: {
                       text: "Count",
-                      font: { size: 16 },
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
                     },
                     rangemode: "tozero",
-                    gridcolor: "#e0e0e0",
+                    gridcolor: plotStyle.gridColor,
                     showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
                   },
                   hovermode: "closest",
                   hoverlabel: {
                     bgcolor: "white",
                     bordercolor: "#333",
-                    font: { size: 14 },
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
+                  },
+                  showlegend: true,
+                  legend: {
+                    orientation: "h",
+                    yanchor: "bottom",
+                    y: -0.25,
+                    xanchor: "center",
+                    x: 0.5,
+                    bgcolor: "rgba(255, 255, 255, 0.85)",
+                    bordercolor: "#ccc",
+                    borderwidth: 1,
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
+                  },
+                  ...(currentPlotType === "bar" && { barmode: "group" }),
+                  margin: {
+                    l: 80,
+                    r: 80,
+                    t: plotStyleMode === "presentation" ? 100 : 80,
+                    b: plotStyleMode === "presentation" ? 200 : 140
+                  },
+                  autosize: true,
+                  paper_bgcolor: plotStyle.paperBg,
+                  plot_bgcolor: plotStyle.plotBg,
+                };
+              } else if (customPlot.plotType === "misc") {
+                // Misc plots - various metrics per packet vs requested throughput
+                const currentPlotType = customPlotPdTypes[customPlot.id] || "line";
+                const activeCycleType = customPlotMiscCycleTypes[customPlot.id] || "total";
+                const miscMetric = customPlot.miscMetric || "cycles";
+
+                selectedRunsData.forEach((run, index) => {
+                  const baselineSuffix = getBaselineSuffix(run.id);
+
+                  // Filter data by throughput range
+                  const filteredData = run.data.filter(filterByThroughputRange);
+
+                  // Create a map of JSON data by throughput (in Mbps) for quick lookup
+                  const jsonDataMap = new Map();
+                  if (run.cpuData?.tests && Array.isArray(run.cpuData.tests)) {
+                    run.cpuData.tests.forEach((test) => {
+                      jsonDataMap.set(test.throughput_mbps, test);
+                    });
+                  }
+
+                  // Calculate metric per packet for each data point
+                  const metricPerPacketData = filteredData.map(d => {
+                    // Constants
+                    const packetsSent = 200000; // default packets sent
+                    const warmup = 10; // seconds
+                    const cooldown = 10; // seconds
+                    const packetSizeBytes = d.Packet_Size || 1472; // bytes
+                    const packetSizeBits = packetSizeBytes * 8;
+
+                    // Calculate packet rate (packets per second)
+                    const packetRate = d.Receive_Throughput / packetSizeBits;
+
+                    // Calculate total packets
+                    const totalPackets = packetsSent + (warmup + cooldown) * packetRate;
+
+                    let metricValue = 0;
+                    let metricSource = "System Total";
+
+                    if (miscMetric === "cycles") {
+                      // Get cycles to use for calculation
+                      let cycles = d.Total_Cycles; // default to CSV total cycles
+
+                      // If a PD is selected, use PD cycles from JSON data
+                      if (customPlot.miscPD && jsonDataMap.size > 0) {
+                        const throughputMbps = Math.round(d.Requested_Throughput / 1000000);
+                        const jsonTest = jsonDataMap.get(throughputMbps);
+
+                        if (jsonTest?.cores?.[0]?.protection_domains) {
+                          const pd = jsonTest.cores[0].protection_domains.find(
+                            p => p.name === customPlot.miscPD
+                          );
+
+                          if (pd) {
+                            metricSource = `${customPlot.miscPD}`;
+                            if (activeCycleType === "kernel") {
+                              cycles = pd.kernel_cycles || 0;
+                            } else if (activeCycleType === "user") {
+                              cycles = pd.user_cycles || 0;
+                            } else {
+                              cycles = pd.total_cycles || 0;
+                            }
+                          }
+                        }
+                      }
+                      metricValue = cycles / totalPackets;
+                    } else if (miscMetric === "kernel_entries") {
+                      // Get kernel entries
+                      let kernelEntries = 0;
+
+                      const throughputMbps = Math.round(d.Requested_Throughput / 1000000);
+                      const jsonTest = jsonDataMap.get(throughputMbps);
+
+                      if (customPlot.miscPD) {
+                        // Per-PD kernel entries
+                        if (jsonTest?.cores?.[0]?.protection_domains) {
+                          const pd = jsonTest.cores[0].protection_domains.find(
+                            p => p.name === customPlot.miscPD
+                          );
+                          if (pd) {
+                            kernelEntries = pd.kernel_entries || 0;
+                            metricSource = `${customPlot.miscPD}`;
+                          }
+                        }
+                      } else {
+                        // System total - sum all PD kernel entries
+                        if (jsonTest?.cores?.[0]?.protection_domains) {
+                          kernelEntries = jsonTest.cores[0].protection_domains.reduce(
+                            (sum, pd) => sum + (pd.kernel_entries || 0), 0
+                          );
+                          metricSource = "System Total";
+                        }
+                      }
+                      metricValue = kernelEntries / totalPackets;
+                    } else if (miscMetric === "l1_i_misses" || miscMetric === "l1_d_misses") {
+                      // Get L1 cache misses from PMU data
+                      const cacheMetricName = miscMetric === "l1_i_misses" ? "L1 i-cache misses" : "L1 d-cache misses";
+
+                      if (run.cpuData?.pmu_data?.[cacheMetricName]) {
+                        const throughputMbps = Math.round(d.Requested_Throughput / 1000000);
+                        const throughputs = run.cpuData.metadata?.test_throughputs || [];
+                        const idx = throughputs.indexOf(throughputMbps);
+
+                        if (idx !== -1 && run.cpuData.pmu_data[cacheMetricName][idx] !== undefined) {
+                          const cacheMisses = run.cpuData.pmu_data[cacheMetricName][idx];
+                          metricValue = cacheMisses / totalPackets;
+                          metricSource = "System Total";
+                        }
+                      }
+                    }
+
+                    return {
+                      requestedThroughput: d.Requested_Throughput,
+                      metricPerPacket: metricValue,
+                      totalMetric: metricValue * totalPackets,
+                      totalPackets: totalPackets,
+                      packetRate: packetRate,
+                      metricSource: metricSource
+                    };
+                  });
+
+                  let metricLabel, metricPerLabel;
+                  if (miscMetric === "cycles") {
+                    metricLabel = "Cycles";
+                    metricPerLabel = "Cycles per Packet";
+                  } else if (miscMetric === "kernel_entries") {
+                    metricLabel = "Kernel Entries";
+                    metricPerLabel = "Kernel Entries per Packet";
+                  } else if (miscMetric === "l1_i_misses") {
+                    metricLabel = "L1 I-Cache Misses";
+                    metricPerLabel = "L1 I-Cache Misses per Packet";
+                  } else if (miscMetric === "l1_d_misses") {
+                    metricLabel = "L1 D-Cache Misses";
+                    metricPerLabel = "L1 D-Cache Misses per Packet";
+                  }
+
+                  customPlotData.push(currentPlotType === "bar" ? {
+                    x: metricPerPacketData.map((d) => {
+                      const val = d.requestedThroughput;
+                      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+                      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+                      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+                      return val.toString();
+                    }),
+                    y: metricPerPacketData.map((d) => d.metricPerPacket),
+                    type: "bar",
+                    name: `${run.name}${baselineSuffix}`,
+                    marker: {
+                      color: colors[index % colors.length],
+                    },
+                    customdata: metricPerPacketData.map((d) => [
+                      d.requestedThroughput,
+                      d.metricPerPacket,
+                      d.totalMetric,
+                      d.totalPackets,
+                      d.packetRate,
+                      d.metricSource
+                    ]),
+                    hovertemplate:
+                      `<b>${run.name}${baselineSuffix}</b><br>` +
+                      "Requested Throughput: %{customdata[0]:,} bps<br>" +
+                      `${metricPerLabel}: %{customdata[1]:,.2f}<br>` +
+                      `${metricLabel}: %{customdata[2]:,.0f} (%{customdata[5]})<br>` +
+                      "Total Packets: %{customdata[3]:,.0f}<br>" +
+                      "Packet Rate: %{customdata[4]:,.2f} pkt/s<br>" +
+                      "<extra></extra>",
+                  } : {
+                    x: metricPerPacketData.map((d) => {
+                      const val = d.requestedThroughput;
+                      if (val >= 1e9) return `${(val / 1e9).toFixed(1)}G`;
+                      if (val >= 1e6) return `${(val / 1e6).toFixed(0)}M`;
+                      if (val >= 1e3) return `${(val / 1e3).toFixed(0)}K`;
+                      return val.toString();
+                    }),
+                    y: metricPerPacketData.map((d) => d.metricPerPacket),
+                    customdata: metricPerPacketData.map((d) => [
+                      d.requestedThroughput,
+                      d.metricPerPacket,
+                      d.totalMetric,
+                      d.totalPackets,
+                      d.packetRate,
+                      d.metricSource
+                    ]),
+                    hovertemplate:
+                      `<b>${run.name}${baselineSuffix}</b><br>` +
+                      "Requested Throughput: %{customdata[0]:,} bps<br>" +
+                      `${metricPerLabel}: %{customdata[1]:,.2f}<br>` +
+                      `${metricLabel}: %{customdata[2]:,.0f} (%{customdata[5]})<br>` +
+                      "Total Packets: %{customdata[3]:,.0f}<br>" +
+                      "Packet Rate: %{customdata[4]:,.2f} pkt/s<br>" +
+                      "<extra></extra>",
+                    type: "scatter",
+                    mode: "lines+markers",
+                    name: `${run.name}${baselineSuffix}`,
+                    line: getLineConfig(index),
+                    marker: getMarkerConfig(index),
+                  });
+                });
+
+                let yAxisLabel;
+                if (miscMetric === "cycles") {
+                  yAxisLabel = "Cycles per Packet";
+                } else if (miscMetric === "kernel_entries") {
+                  yAxisLabel = "Kernel Entries per Packet";
+                } else if (miscMetric === "l1_i_misses") {
+                  yAxisLabel = "L1 I-Cache Misses per Packet";
+                } else if (miscMetric === "l1_d_misses") {
+                  yAxisLabel = "L1 D-Cache Misses per Packet";
+                }
+
+                customLayout = {
+                  title: {
+                    text: customPlot.name,
+                    font: { size: plotStyle.fontSize.title, color: "#333", family: plotStyle.fontFamily },
+                  },
+                  xaxis: {
+                    type: "category",
+                    title: {
+                      text: "Requested Throughput (bps)",
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
+                    },
+                    gridcolor: plotStyle.gridColor,
+                    showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
+                  },
+                  yaxis: {
+                    title: {
+                      text: yAxisLabel,
+                      font: { size: plotStyle.fontSize.axis, family: plotStyle.fontFamily },
+                    },
+                    rangemode: "tozero",
+                    gridcolor: plotStyle.gridColor,
+                    showgrid: true,
+                    tickfont: { size: plotStyle.fontSize.tick, family: plotStyle.fontFamily },
+                  },
+                  hovermode: "closest",
+                  hoverlabel: {
+                    bgcolor: "white",
+                    bordercolor: "#333",
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
                   showlegend: true,
                   legend: {
                     orientation: "v",
                     yanchor: "top",
-                    y: 1,
-                    xanchor: "left",
-                    x: 1.02,
-                    bgcolor: "rgba(255, 255, 255, 0.9)",
-                    bordercolor: "#ddd",
+                    y: 0.98,
+                    xanchor: "right",
+                    x: 0.98,
+                    bgcolor: "rgba(255, 255, 255, 0.85)",
+                    bordercolor: "#ccc",
                     borderwidth: 1,
+                    font: { size: plotStyle.fontSize.legend, family: plotStyle.fontFamily },
                   },
                   ...(currentPlotType === "bar" && { barmode: "group" }),
-                  margin: { l: 80, r: 200, t: 80, b: 80 },
+                  margin: {
+                    l: 80,
+                    r: 80,
+                    t: plotStyleMode === "presentation" ? 100 : 80,
+                    b: plotStyleMode === "presentation" ? 100 : 80
+                  },
                   autosize: true,
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "#fafafa",
+                  paper_bgcolor: plotStyle.paperBg,
+                  plot_bgcolor: plotStyle.plotBg,
                 };
               }
+
+              // Calculate statistics for misc plots
+              const calculateMiscStats = () => {
+                if (customPlot.plotType !== "misc" || selectedRunsData.length < 2) return null;
+
+                const activeCycleType = customPlotMiscCycleTypes[customPlot.id] || "total";
+                const miscMetric = customPlot.miscMetric || "cycles";
+                const baselineRun = selectedRunsData[0];
+                const stats = { comparisons: [] };
+
+                // Helper function to calculate metric per packet
+                const getMetricPerPacket = (run, dataPoint) => {
+                  const packetsSent = 200000;
+                  const warmup = 10;
+                  const cooldown = 10;
+                  const packetSizeBytes = dataPoint.Packet_Size || 1472;
+                  const packetSizeBits = packetSizeBytes * 8;
+                  const packetRate = dataPoint.Receive_Throughput / packetSizeBits;
+                  const totalPackets = packetsSent + (warmup + cooldown) * packetRate;
+
+                  let metricValue = 0;
+
+                  if (miscMetric === "cycles") {
+                    let cycles = dataPoint.Total_Cycles;
+
+                    // If a PD is selected, use PD cycles from JSON data
+                    if (customPlot.miscPD && run.cpuData?.tests) {
+                      const throughputMbps = Math.round(dataPoint.Requested_Throughput / 1000000);
+                      const jsonTest = run.cpuData.tests.find(test => test.throughput_mbps === throughputMbps);
+
+                      if (jsonTest?.cores?.[0]?.protection_domains) {
+                        const pd = jsonTest.cores[0].protection_domains.find(p => p.name === customPlot.miscPD);
+
+                        if (pd) {
+                          if (activeCycleType === "kernel") {
+                            cycles = pd.kernel_cycles || 0;
+                          } else if (activeCycleType === "user") {
+                            cycles = pd.user_cycles || 0;
+                          } else {
+                            cycles = pd.total_cycles || 0;
+                          }
+                        }
+                      }
+                    }
+                    metricValue = cycles / totalPackets;
+                  } else if (miscMetric === "kernel_entries") {
+                    let kernelEntries = 0;
+
+                    if (run.cpuData?.tests) {
+                      const throughputMbps = Math.round(dataPoint.Requested_Throughput / 1000000);
+                      const jsonTest = run.cpuData.tests.find(test => test.throughput_mbps === throughputMbps);
+
+                      if (customPlot.miscPD) {
+                        // Per-PD kernel entries
+                        if (jsonTest?.cores?.[0]?.protection_domains) {
+                          const pd = jsonTest.cores[0].protection_domains.find(p => p.name === customPlot.miscPD);
+                          if (pd) {
+                            kernelEntries = pd.kernel_entries || 0;
+                          }
+                        }
+                      } else {
+                        // System total - sum all PD kernel entries
+                        if (jsonTest?.cores?.[0]?.protection_domains) {
+                          kernelEntries = jsonTest.cores[0].protection_domains.reduce(
+                            (sum, pd) => sum + (pd.kernel_entries || 0), 0
+                          );
+                        }
+                      }
+                    }
+                    metricValue = kernelEntries / totalPackets;
+                  } else if (miscMetric === "l1_i_misses" || miscMetric === "l1_d_misses") {
+                    // Get L1 cache misses from PMU data
+                    const cacheMetricName = miscMetric === "l1_i_misses" ? "L1 i-cache misses" : "L1 d-cache misses";
+
+                    if (run.cpuData?.pmu_data?.[cacheMetricName]) {
+                      const throughputMbps = Math.round(dataPoint.Requested_Throughput / 1000000);
+                      const throughputs = run.cpuData.metadata?.test_throughputs || [];
+                      const idx = throughputs.indexOf(throughputMbps);
+
+                      if (idx !== -1 && run.cpuData.pmu_data[cacheMetricName][idx] !== undefined) {
+                        const cacheMisses = run.cpuData.pmu_data[cacheMetricName][idx];
+                        metricValue = cacheMisses / totalPackets;
+                      }
+                    }
+                  }
+
+                  return metricValue;
+                };
+
+                // Get baseline data points
+                const baselinePoints = baselineRun.data
+                  .filter(filterByThroughputRange)
+                  .map(d => ({
+                    throughput: d.Requested_Throughput,
+                    metricPerPacket: getMetricPerPacket(baselineRun, d)
+                  }));
+
+                // Compare each other run
+                for (let i = 1; i < selectedRunsData.length; i++) {
+                  const compareRun = selectedRunsData[i];
+
+                  const comparePoints = compareRun.data
+                    .filter(filterByThroughputRange)
+                    .map(d => ({
+                      throughput: d.Requested_Throughput,
+                      metricPerPacket: getMetricPerPacket(compareRun, d)
+                    }));
+
+                  // Match points and calculate diffs
+                  const diffs = [];
+                  const absDiffs = [];
+
+                  baselinePoints.forEach(basePt => {
+                    const matchPt = comparePoints.find(pt => pt.throughput === basePt.throughput);
+
+                    if (matchPt) {
+                      const baseVal = basePt.metricPerPacket;
+                      const matchVal = matchPt.metricPerPacket;
+
+                      if (baseVal > 0) {
+                        diffs.push(((matchVal - baseVal) / baseVal) * 100);
+                      }
+                      absDiffs.push(matchVal - baseVal);
+                    }
+                  });
+
+                  if (diffs.length > 0) {
+                    const meanRel = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+                    const meanAbs = absDiffs.reduce((a, b) => a + b, 0) / absDiffs.length;
+
+                    stats.comparisons.push({
+                      runName: compareRun.name,
+                      baselineName: baselineRun.name,
+                      meanRel,
+                      meanAbs
+                    });
+                  }
+                }
+
+                return stats.comparisons.length > 0 ? stats : null;
+              };
+
+              const miscStats = customPlot.plotType === "misc" ? calculateMiscStats() : null;
 
               // Calculate statistics for PD plots
               const calculatePDStats = () => {
@@ -2587,12 +3327,16 @@ function App() {
                     const pd = test.cores?.[0]?.protection_domains?.find(p => p.name === pdName);
                     if (pd) {
                       const throughput = baselineRun.data[testIdx]?.Receive_Throughput || 0;
-                      baselinePoints.push({
-                        throughput: throughput / 1e6,
-                        total: pd.cpu_utilization || 0,
-                        kernel: pd.kernel_cpu_utilization || 0,
-                        user: pd.user_cpu_utilization || 0
-                      });
+                      // Filter by throughput range
+                      const inRange = filterByThroughputRange({ Requested_Throughput: throughput });
+                      if (inRange) {
+                        baselinePoints.push({
+                          throughput: throughput / 1e6,
+                          total: pd.cpu_utilization || 0,
+                          kernel: pd.kernel_cpu_utilization || 0,
+                          user: pd.user_cpu_utilization || 0
+                        });
+                      }
                     }
                   });
 
@@ -2605,12 +3349,16 @@ function App() {
                       const pd = test.cores?.[0]?.protection_domains?.find(p => p.name === pdName);
                       if (pd) {
                         const throughput = compareRun.data[testIdx]?.Receive_Throughput || 0;
-                        comparePoints.push({
-                          throughput: throughput / 1e6,
-                          total: pd.cpu_utilization || 0,
-                          kernel: pd.kernel_cpu_utilization || 0,
-                          user: pd.user_cpu_utilization || 0
-                        });
+                        // Filter by throughput range
+                        const inRange = filterByThroughputRange({ Requested_Throughput: throughput });
+                        if (inRange) {
+                          comparePoints.push({
+                            throughput: throughput / 1e6,
+                            total: pd.cpu_utilization || 0,
+                            kernel: pd.kernel_cpu_utilization || 0,
+                            user: pd.user_cpu_utilization || 0
+                          });
+                        }
                       }
                     });
 
@@ -2683,6 +3431,15 @@ function App() {
 
                       // Calculate point-by-point differences
                       for (let j = 0; j < minLength; j++) {
+                        // Filter by throughput range - check if this test index is within range
+                        const baselineThroughput = baselineRun.data[j]?.Requested_Throughput;
+                        const compareThroughput = compareRun.data[j]?.Requested_Throughput;
+
+                        const baselineInRange = baselineThroughput ? filterByThroughputRange({ Requested_Throughput: baselineThroughput }) : false;
+                        const compareInRange = compareThroughput ? filterByThroughputRange({ Requested_Throughput: compareThroughput }) : false;
+
+                        if (!baselineInRange || !compareInRange) continue;
+
                         const baseline = baselineData[j];
                         const compare = compareData[j];
 
@@ -2692,9 +3449,17 @@ function App() {
                         absDiffs.push(compare - baseline);
                       }
 
-                      // Calculate averages for display
-                      const baselineAvg = baselineData.reduce((a, b) => a + b, 0) / baselineData.length;
-                      const compareAvg = compareData.reduce((a, b) => a + b, 0) / compareData.length;
+                      // Calculate averages for display (only for points within range)
+                      const baselineFiltered = baselineData.filter((_, idx) => {
+                        const throughput = baselineRun.data[idx]?.Requested_Throughput;
+                        return throughput && filterByThroughputRange({ Requested_Throughput: throughput });
+                      });
+                      const compareFiltered = compareData.filter((_, idx) => {
+                        const throughput = compareRun.data[idx]?.Requested_Throughput;
+                        return throughput && filterByThroughputRange({ Requested_Throughput: throughput });
+                      });
+                      const baselineAvg = baselineFiltered.length > 0 ? baselineFiltered.reduce((a, b) => a + b, 0) / baselineFiltered.length : 0;
+                      const compareAvg = compareFiltered.length > 0 ? compareFiltered.reduce((a, b) => a + b, 0) / compareFiltered.length : 0;
 
                       // Mean of point-by-point relative differences
                       const meanRelDiff = relDiffs.length > 0 ? relDiffs.reduce((a, b) => a + b, 0) / relDiffs.length : 0;
@@ -2720,6 +3485,113 @@ function App() {
               };
 
               const cacheStats = calculateCacheStats();
+
+              // Calculate statistics for xput-cpu plots
+              const calculateXputCpuStats = () => {
+                if (customPlot.plotType !== "xput-cpu" || selectedRunsData.length < 2) return null;
+
+                const baselineRun = selectedRunsData[0];
+                const activeCpuType = customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total";
+
+                const getCpuValue = (test) => {
+                  if (!test.system) return 0;
+                  if (activeCpuType === "kernel") return test.system.kernel_cpu_utilization || 0;
+                  if (activeCpuType === "user") return test.system.user_cpu_utilization || 0;
+                  return test.system.cpu_utilization || 0;
+                };
+
+                const stats = {
+                  throughput: { comparisons: [] },
+                  cpu: { comparisons: [] }
+                };
+
+                // Get baseline data (filtered by throughput range)
+                const baselineThroughputData = baselineRun.data
+                  .filter(filterByThroughputRange)
+                  .map(d => d.Receive_Throughput);
+                const baselineCpuData = baselineRun.cpuData?.tests
+                  ?.filter((test, idx) => {
+                    const throughput = test.throughput_mbps * 1e6;
+                    return filterByThroughputRange({ Requested_Throughput: throughput });
+                  })
+                  .map(getCpuValue) || [];
+
+                // Compare each other run
+                for (let i = 1; i < selectedRunsData.length; i++) {
+                  const compareRun = selectedRunsData[i];
+
+                  // Throughput comparison (filtered by throughput range)
+                  const compareThroughputData = compareRun.data
+                    .filter(filterByThroughputRange)
+                    .map(d => d.Receive_Throughput);
+                  if (baselineThroughputData.length > 0 && compareThroughputData.length > 0) {
+                    const minLength = Math.min(baselineThroughputData.length, compareThroughputData.length);
+                    const relDiffs = [];
+
+                    for (let j = 0; j < minLength; j++) {
+                      const baseline = baselineThroughputData[j];
+                      const compare = compareThroughputData[j];
+
+                      if (baseline > 0) {
+                        relDiffs.push(((compare - baseline) / baseline) * 100);
+                      }
+                    }
+
+                    if (relDiffs.length > 0) {
+                      const baselineAvg = baselineThroughputData.reduce((a, b) => a + b, 0) / baselineThroughputData.length;
+                      const compareAvg = compareThroughputData.reduce((a, b) => a + b, 0) / compareThroughputData.length;
+                      const meanRelDiff = relDiffs.reduce((a, b) => a + b, 0) / relDiffs.length;
+
+                      stats.throughput.comparisons.push({
+                        runName: compareRun.name,
+                        baselineName: baselineRun.name,
+                        baselineAvg,
+                        compareAvg,
+                        relDiff: meanRelDiff
+                      });
+                    }
+                  }
+
+                  // CPU comparison (filtered by throughput range)
+                  const compareCpuData = compareRun.cpuData?.tests
+                    ?.filter((test, idx) => {
+                      const throughput = test.throughput_mbps * 1e6;
+                      return filterByThroughputRange({ Requested_Throughput: throughput });
+                    })
+                    .map(getCpuValue) || [];
+                  if (baselineCpuData.length > 0 && compareCpuData.length > 0) {
+                    const minLength = Math.min(baselineCpuData.length, compareCpuData.length);
+                    const relDiffs = [];
+
+                    for (let j = 0; j < minLength; j++) {
+                      const baseline = baselineCpuData[j];
+                      const compare = compareCpuData[j];
+
+                      if (baseline > 0) {
+                        relDiffs.push(((compare - baseline) / baseline) * 100);
+                      }
+                    }
+
+                    if (relDiffs.length > 0) {
+                      const baselineAvg = baselineCpuData.reduce((a, b) => a + b, 0) / baselineCpuData.length;
+                      const compareAvg = compareCpuData.reduce((a, b) => a + b, 0) / compareCpuData.length;
+                      const meanRelDiff = relDiffs.reduce((a, b) => a + b, 0) / relDiffs.length;
+
+                      stats.cpu.comparisons.push({
+                        runName: compareRun.name,
+                        baselineName: baselineRun.name,
+                        baselineAvg,
+                        compareAvg,
+                        relDiff: meanRelDiff
+                      });
+                    }
+                  }
+                }
+
+                return (stats.throughput.comparisons.length > 0 || stats.cpu.comparisons.length > 0) ? stats : null;
+              };
+
+              const xputCpuStats = calculateXputCpuStats();
 
               return (
                 <div key={customPlot.id}>
@@ -2792,7 +3664,7 @@ function App() {
                           </div>
                         </div>
                       )}
-                      {(customPlot.plotType === "pds" || customPlot.plotType === "cache") && (
+                      {(customPlot.plotType === "pds" || customPlot.plotType === "cache" || customPlot.plotType === "misc") && (
                         <>
                       {customPlot.plotType === "pds" && (
                         <>
@@ -2815,6 +3687,66 @@ function App() {
                                     onClick={() =>
                                       setCustomPlotCpuTypes({
                                         ...customPlotCpuTypes,
+                                        [customPlot.id]: type,
+                                      })
+                                    }
+                                    style={{
+                                      padding: "0.35rem 0.75rem",
+                                      borderRadius: "0",
+                                      border: "1px solid #c0c0b8",
+                                      fontSize: "0.7rem",
+                                      fontWeight: "700",
+                                      backgroundColor: currentType === type ? "#191918" : "#ffffff",
+                                      color: currentType === type ? "#f4f4f2" : "#191918",
+                                      cursor: "pointer",
+                                      transition: "all 0.15s",
+                                      textTransform: "uppercase",
+                                      letterSpacing: "0.5px",
+                                      boxShadow: currentType === type ? "2px 2px 0 rgba(25, 25, 24, 0.15)" : "none"
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      if (currentType !== type) {
+                                        e.currentTarget.style.background = "#f4f4f2";
+                                        e.currentTarget.style.borderColor = "#191918";
+                                      }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      if (currentType !== type) {
+                                        e.currentTarget.style.background = "#ffffff";
+                                        e.currentTarget.style.borderColor = "#c0c0b8";
+                                      }
+                                    }}
+                                  >
+                                    {type}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {customPlot.plotType === "misc" && customPlot.miscPD && (customPlot.miscMetric || "cycles") === "cycles" && (
+                        <>
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                            <label style={{
+                              fontWeight: 700,
+                              fontSize: "0.65rem",
+                              color: "#191918",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.8px"
+                            }}>
+                              Cycle Type:
+                            </label>
+                            <div style={{ display: "flex", gap: "0.35rem" }}>
+                              {["total", "kernel", "user"].map((type) => {
+                                const currentType = customPlotMiscCycleTypes[customPlot.id] || customPlot.miscCycleType || "total";
+                                return (
+                                  <button
+                                    key={type}
+                                    onClick={() =>
+                                      setCustomPlotMiscCycleTypes({
+                                        ...customPlotMiscCycleTypes,
                                         [customPlot.id]: type,
                                       })
                                     }
@@ -2911,6 +3843,72 @@ function App() {
                       </div>
                       </>
                       )}
+
+                      {/* Throughput Range Filter for Custom Plots */}
+                      {selectedRunsData.length > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                          <label style={{
+                            fontWeight: 700,
+                            fontSize: "0.65rem",
+                            color: "#191918",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.8px"
+                          }}>
+                            Range:
+                          </label>
+                          <div style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
+                            <select
+                              value={throughputRange.min || ""}
+                              onChange={(e) => setThroughputRange({
+                                ...throughputRange,
+                                min: e.target.value ? Number(e.target.value) : null
+                              })}
+                              style={{
+                                width: "80px",
+                                padding: "0.3rem 0.4rem",
+                                border: "1px solid #c0c0b8",
+                                borderRadius: "0",
+                                fontSize: "0.65rem",
+                                fontFamily: "monospace",
+                                backgroundColor: "#ffffff",
+                                cursor: "pointer"
+                              }}
+                            >
+                              <option value="">Min</option>
+                              {availableThroughputValues.map(val => (
+                                <option key={val} value={val}>
+                                  {formatThroughputValue(val)}
+                                </option>
+                              ))}
+                            </select>
+                            <span style={{ fontSize: "0.6rem", color: "#6b6b68" }}>–</span>
+                            <select
+                              value={throughputRange.max || ""}
+                              onChange={(e) => setThroughputRange({
+                                ...throughputRange,
+                                max: e.target.value ? Number(e.target.value) : null
+                              })}
+                              style={{
+                                width: "80px",
+                                padding: "0.3rem 0.4rem",
+                                border: "1px solid #c0c0b8",
+                                borderRadius: "0",
+                                fontSize: "0.65rem",
+                                fontFamily: "monospace",
+                                backgroundColor: "#ffffff",
+                                cursor: "pointer"
+                              }}
+                            >
+                              <option value="">Max</option>
+                              {availableThroughputValues.map(val => (
+                                <option key={val} value={val}>
+                                  {formatThroughputValue(val)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => editCustomPlot(customPlot)}
@@ -2939,7 +3937,7 @@ function App() {
                       ✎ Edit Plot
                     </button>
                   </div>
-                  <div className="chart-section" style={{ height: (pdStats || cacheStats) ? "calc(100vh - 320px)" : "calc(100vh - 220px)", minHeight: "500px" }}>
+                  <div className="chart-section" style={{ height: (pdStats || cacheStats || xputCpuStats) ? "calc(100vh - 320px)" : "calc(100vh - 220px)", minHeight: "500px" }}>
                     <Plot
                       data={customPlotData}
                       layout={customLayout}
@@ -2948,6 +3946,89 @@ function App() {
                       useResizeHandler={true}
                     />
                   </div>
+                  {miscStats && (
+                    <div style={{
+                      padding: "1rem 1.5rem",
+                      background: "#fafaf8",
+                      borderTop: "2px solid #191918",
+                      fontSize: "0.75rem",
+                      maxHeight: "200px",
+                      overflowY: "auto"
+                    }}>
+                      <div style={{
+                        fontWeight: "700",
+                        marginBottom: "0.75rem",
+                        color: "#191918",
+                        fontSize: "0.7rem",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px"
+                      }}>
+                        {(() => {
+                          const metric = customPlot.miscMetric || "cycles";
+                          if (metric === "cycles") {
+                            return `Cycles per Packet Comparison vs Baseline${customPlot.miscPD ? ` (${customPlot.miscPD} - ${(customPlotMiscCycleTypes[customPlot.id] || "total")} cycles)` : ""}`;
+                          } else if (metric === "kernel_entries") {
+                            return `Kernel Entries per Packet Comparison vs Baseline${customPlot.miscPD ? ` (${customPlot.miscPD})` : " (System Total)"}`;
+                          } else if (metric === "l1_i_misses") {
+                            return "L1 I-Cache Misses per Packet Comparison vs Baseline (System Total)";
+                          } else if (metric === "l1_d_misses") {
+                            return "L1 D-Cache Misses per Packet Comparison vs Baseline (System Total)";
+                          }
+                        })()}
+                      </div>
+
+                      {/* Formula Display */}
+                      <div style={{
+                        background: "#ffffff",
+                        border: "2px solid #191918",
+                        padding: "0.75rem",
+                        marginBottom: "1rem",
+                        fontFamily: "monospace",
+                        fontSize: "0.7rem",
+                        lineHeight: "1.5"
+                      }}>
+                        <div style={{ color: "#6b6b68", marginBottom: "0.4rem", fontWeight: "700", letterSpacing: "0.5px" }}>
+                          CALCULATION:
+                        </div>
+                        <div style={{ color: "#191918" }}>
+                          <div>For each data point i:</div>
+                          <div style={{ marginLeft: "1rem", marginTop: "0.2rem" }}>
+                            RelDiff[i] = ((Compare[i] - Baseline[i]) / Baseline[i]) × 100
+                          </div>
+                          <div style={{ marginLeft: "1rem" }}>
+                            AbsDiff[i] = Compare[i] - Baseline[i]
+                          </div>
+                          <div style={{ marginTop: "0.4rem" }}>
+                            Result = Arithmetic Mean of differences
+                          </div>
+                        </div>
+                      </div>
+
+                      {miscStats.comparisons.map((comp, idx) => {
+                        const metric = customPlot.miscMetric || "cycles";
+                        let absUnit;
+                        if (metric === "cycles") {
+                          absUnit = "cycles/pkt";
+                        } else if (metric === "kernel_entries") {
+                          absUnit = "entries/pkt";
+                        } else if (metric === "l1_i_misses" || metric === "l1_d_misses") {
+                          absUnit = "misses/pkt";
+                        }
+                        return (
+                          <div key={idx} style={{
+                            marginLeft: "1rem",
+                            color: "#191918",
+                            lineHeight: "1.7",
+                            fontFamily: "monospace",
+                            fontSize: "0.7rem",
+                            marginBottom: "0.5rem"
+                          }}>
+                            {comp.runName} vs {comp.baselineName}: <span style={{ fontWeight: "700", color: comp.meanRel >= 0 ? "#8b0000" : "#006400" }}>{comp.meanRel >= 0 ? '+' : ''}{comp.meanRel.toFixed(1)}%</span> ({comp.meanAbs >= 0 ? '+' : ''}{comp.meanAbs.toFixed(2)} {absUnit})
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {pdStats && (
                     <div style={{
                       padding: "1rem 1.5rem",
@@ -3099,6 +4180,103 @@ function App() {
                       ))}
                     </div>
                   )}
+                  {xputCpuStats && (
+                    <div style={{
+                      padding: "1rem 1.5rem",
+                      background: "#fafaf8",
+                      borderTop: "2px solid #191918",
+                      fontSize: "0.75rem",
+                      maxHeight: "200px",
+                      overflowY: "auto"
+                    }}>
+                      <div style={{
+                        fontWeight: "700",
+                        marginBottom: "0.75rem",
+                        color: "#191918",
+                        fontSize: "0.7rem",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px"
+                      }}>
+                        Throughput + CPU Comparison vs Baseline
+                      </div>
+
+                      {/* Formula Display */}
+                      <div style={{
+                        background: "#ffffff",
+                        border: "2px solid #191918",
+                        padding: "0.75rem",
+                        marginBottom: "1rem",
+                        fontFamily: "monospace",
+                        fontSize: "0.7rem",
+                        lineHeight: "1.5"
+                      }}>
+                        <div style={{ color: "#6b6b68", marginBottom: "0.4rem", fontWeight: "700", letterSpacing: "0.5px" }}>
+                          CALCULATION:
+                        </div>
+                        <div style={{ color: "#191918" }}>
+                          <div>For each data point i:</div>
+                          <div style={{ marginLeft: "1rem", marginTop: "0.2rem" }}>
+                            RelDiff[i] = ((Compare[i] - Baseline[i]) / Baseline[i]) × 100
+                          </div>
+                          <div style={{ marginTop: "0.4rem" }}>
+                            Result = Arithmetic Mean of differences
+                          </div>
+                        </div>
+                      </div>
+
+                      {xputCpuStats.throughput.comparisons.length > 0 && (
+                        <div style={{ marginBottom: "0.75rem" }}>
+                          <div style={{
+                            fontWeight: "700",
+                            color: "#191918",
+                            marginBottom: "0.35rem",
+                            fontSize: "0.7rem",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px"
+                          }}>
+                            [Throughput]
+                          </div>
+                          {xputCpuStats.throughput.comparisons.map((comp, idx) => (
+                            <div key={idx} style={{
+                              marginLeft: "1rem",
+                              color: "#191918",
+                              lineHeight: "1.7",
+                              fontFamily: "monospace",
+                              fontSize: "0.7rem"
+                            }}>
+                              {comp.runName} vs {comp.baselineName}: <span style={{ fontWeight: "700", color: comp.relDiff >= 0 ? "#8b0000" : "#006400" }}>{comp.relDiff >= 0 ? '+' : ''}{comp.relDiff.toFixed(1)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {xputCpuStats.cpu.comparisons.length > 0 && (
+                        <div style={{ marginBottom: "0.75rem" }}>
+                          <div style={{
+                            fontWeight: "700",
+                            color: "#191918",
+                            marginBottom: "0.35rem",
+                            fontSize: "0.7rem",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px"
+                          }}>
+                            [CPU Utilization ({(customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total").charAt(0).toUpperCase() + (customPlotCpuTypes[customPlot.id] || customPlot.cpuType || "total").slice(1)})]
+                          </div>
+                          {xputCpuStats.cpu.comparisons.map((comp, idx) => (
+                            <div key={idx} style={{
+                              marginLeft: "1rem",
+                              color: "#191918",
+                              lineHeight: "1.7",
+                              fontFamily: "monospace",
+                              fontSize: "0.7rem"
+                            }}>
+                              {comp.runName} vs {comp.baselineName}: <span style={{ fontWeight: "700", color: comp.relDiff >= 0 ? "#8b0000" : "#006400" }}>{comp.relDiff >= 0 ? '+' : ''}{comp.relDiff.toFixed(1)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -3125,6 +4303,8 @@ function App() {
               cpuType: "total",
               cacheMetrics: [],
               baselineRunId: null,
+              miscPD: null,
+              miscMetric: "cycles",
             });
           }}
         >
@@ -3155,6 +4335,7 @@ function App() {
                 <option value="rtt">Round-Trip Time (RTT)</option>
                 <option value="pds">Protection Domains</option>
                 <option value="cache">Cache Metrics</option>
+                <option value="misc">Misc (Cycles per Packet)</option>
               </select>
             </div>
 
@@ -3270,6 +4451,80 @@ function App() {
                 );
               })()}
 
+            {newPlot.plotType === "misc" && (
+              <>
+                <div className="dialog-field">
+                  <label>Select Metric:</label>
+                  <select
+                    value={newPlot.miscMetric || "cycles"}
+                    onChange={(e) =>
+                      setNewPlot({
+                        ...newPlot,
+                        miscMetric: e.target.value
+                      })
+                    }
+                  >
+                    <option value="cycles">Cycles per Packet</option>
+                    <option value="kernel_entries">Kernel Entries per Packet</option>
+                    <option value="l1_i_misses">L1 I-Cache Misses per Packet</option>
+                    <option value="l1_d_misses">L1 D-Cache Misses per Packet</option>
+                  </select>
+                </div>
+
+                {(() => {
+                  const metricType = newPlot.miscMetric || "cycles";
+                  const isCacheMetric = metricType === "l1_i_misses" || metricType === "l1_d_misses";
+
+                  // Cache metrics are system-wide only, no PD selection
+                  if (isCacheMetric) {
+                    return null;
+                  }
+
+                  // Collect all unique protection domains from runs with CPU data
+                  const availablePDs = new Map();
+                  runs.forEach((run) => {
+                    run.cpuData?.tests?.[0]?.cores?.[0]?.protection_domains?.forEach(
+                      (pd) => {
+                        if (!availablePDs.has(pd.name)) {
+                          availablePDs.set(pd.name, true);
+                        }
+                      },
+                    );
+                  });
+                  const pdList = Array.from(availablePDs.keys());
+                  const systemLabel = metricType === "cycles" ? "System Total Cycles" : "System Total";
+
+                  return pdList.length > 0 ? (
+                    <div className="dialog-field">
+                      <label>Select Protection Domain (optional):</label>
+                      <select
+                        value={newPlot.miscPD || ""}
+                        onChange={(e) =>
+                          setNewPlot({
+                            ...newPlot,
+                            miscPD: e.target.value || null
+                          })
+                        }
+                      >
+                        <option value="">{systemLabel}</option>
+                        {pdList.map((pdName) => (
+                          <option key={pdName} value={pdName}>
+                            {pdName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="dialog-field">
+                      <p style={{ color: "#999", fontSize: "0.9rem" }}>
+                        No protection domain data available. {systemLabel} will be used.
+                      </p>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+
             <div className="dialog-actions">
               <button
                 onClick={() => {
@@ -3283,6 +4538,8 @@ function App() {
                     cpuType: "total",
                     cacheMetrics: [],
                     baselineRunId: null,
+                    miscPD: null,
+                    miscMetric: "cycles",
                   });
                 }}
                 className="btn-cancel"

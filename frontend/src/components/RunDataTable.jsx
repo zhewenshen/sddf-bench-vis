@@ -203,7 +203,17 @@ function RunDataTable({ run, onClose, onUpdateMetadata }) {
             <button
               onClick={() => {
                 // Export table data as CSV
-                const headers = [
+                // First, collect all unique protection domain names across all tests
+                const pdNames = new Set();
+                data.forEach(row => {
+                  if (row.protectionDomains && Array.isArray(row.protectionDomains)) {
+                    row.protectionDomains.forEach(pd => pdNames.add(pd.name));
+                  }
+                });
+                const sortedPDNames = Array.from(pdNames).sort();
+
+                // Build headers with PD columns
+                const baseHeaders = [
                   "Test #",
                   "Requested Throughput (bps)",
                   "Received Throughput (bps)",
@@ -219,21 +229,60 @@ function RunDataTable({ run, onClose, onUpdateMetadata }) {
                   "User CPU %"
                 ];
 
-                const rows = data.map(row => [
-                  row.testNumber,
-                  row.requestedThroughput,
-                  row.receivedThroughput,
-                  row.throughputPercent,
-                  row.avgRTT,
-                  row.minRTT,
-                  row.maxRTT,
-                  row.stdevRTT,
-                  row.medianRTT,
-                  row.badPackets,
-                  row.totalCPU ?? "N/A",
-                  row.kernelCPU ?? "N/A",
-                  row.userCPU ?? "N/A"
+                // Add PD-specific columns for each protection domain
+                const pdHeaders = sortedPDNames.flatMap(pdName => [
+                  `${pdName} - Total CPU %`,
+                  `${pdName} - Kernel CPU %`,
+                  `${pdName} - User CPU %`,
+                  `${pdName} - Total Cycles`,
+                  `${pdName} - Kernel Cycles`,
+                  `${pdName} - User Cycles`,
+                  `${pdName} - Kernel Entries`,
+                  `${pdName} - Schedules`
                 ]);
+
+                const headers = [...baseHeaders, ...pdHeaders];
+
+                // Build rows with PD data
+                const rows = data.map(row => {
+                  const baseRow = [
+                    row.testNumber,
+                    row.requestedThroughput,
+                    row.receivedThroughput,
+                    row.throughputPercent,
+                    row.avgRTT,
+                    row.minRTT,
+                    row.maxRTT,
+                    row.stdevRTT,
+                    row.medianRTT,
+                    row.badPackets,
+                    row.totalCPU ?? "N/A",
+                    row.kernelCPU ?? "N/A",
+                    row.userCPU ?? "N/A"
+                  ];
+
+                  // Add PD data for each protection domain
+                  const pdData = sortedPDNames.flatMap(pdName => {
+                    const pd = row.protectionDomains?.find(p => p.name === pdName);
+                    if (pd) {
+                      return [
+                        pd.cpuUtilization ?? "N/A",
+                        pd.kernelCpuUtilization ?? "N/A",
+                        pd.userCpuUtilization ?? "N/A",
+                        pd.totalCycles ?? "N/A",
+                        pd.kernelCycles ?? "N/A",
+                        pd.userCycles ?? "N/A",
+                        pd.kernelEntries ?? "N/A",
+                        pd.schedules ?? "N/A"
+                      ];
+                    } else {
+                      // If PD doesn't exist for this test, fill with N/A
+                      return ["N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"];
+                    }
+                  });
+
+                  return [...baseRow, ...pdData];
+                });
 
                 const csvContent = [
                   headers.join(","),

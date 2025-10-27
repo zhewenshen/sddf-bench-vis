@@ -312,7 +312,7 @@ async function createPDComparisonPlot(runs, pdName) {
     await Plotly.newPlot(div, traces, layout, { responsive: false });
 
     const imgData = await Plotly.toImage(div, {
-      format: 'png',
+      format: 'svg',
       width: 1200,
       height: 600,
       scale: 4  // High resolution
@@ -327,12 +327,12 @@ async function createPDComparisonPlot(runs, pdName) {
 }
 
 /**
- * Capture Plotly chart as high-res PNG
+ * Capture Plotly chart as SVG
  */
 async function capturePlotToPDF(pdf, plotElement, title, yPosition, pageWidth, pageHeight, margin) {
   try {
     const imgData = await Plotly.toImage(plotElement, {
-      format: 'png',
+      format: 'svg',
       width: 1600,
       height: 800,
       scale: 4  // High resolution
@@ -355,7 +355,7 @@ async function capturePlotToPDF(pdf, plotElement, title, yPosition, pageWidth, p
       yPosition += 8;
     }
 
-    pdf.addImage(imgData, 'PNG', margin, yPosition, imgWidth, imgHeight, undefined, 'FAST');
+    pdf.addImage(imgData, 'SVG', margin, yPosition, imgWidth, imgHeight, undefined, 'FAST');
 
     return yPosition + imgHeight + 10;
   } catch (error) {
@@ -368,7 +368,7 @@ async function capturePlotToPDF(pdf, plotElement, title, yPosition, pageWidth, p
 }
 
 /**
- * Add generated PNG plot to PDF
+ * Add generated SVG plot to PDF
  */
 async function addGeneratedPlotToPDF(pdf, imgData, title, yPosition, pageWidth, pageHeight, margin) {
   try {
@@ -389,7 +389,7 @@ async function addGeneratedPlotToPDF(pdf, imgData, title, yPosition, pageWidth, 
       yPosition += 8;
     }
 
-    pdf.addImage(imgData, 'PNG', margin, yPosition, imgWidth, imgHeight, undefined, 'FAST');
+    pdf.addImage(imgData, 'SVG', margin, yPosition, imgWidth, imgHeight, undefined, 'FAST');
 
     return yPosition + imgHeight + 10;
   } catch (error) {

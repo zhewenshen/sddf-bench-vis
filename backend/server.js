@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
+import { parse } from "csv-parse/sync";
 import { DualStorage } from "./storage/DualStorage.js";
 
 const app = express();
@@ -43,6 +44,59 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
     res
       .status(400)
       .json({ error: "Invalid JSON file", details: error.message });
+  }
+});
+
+// Upload CSV + JSON dataset (for automation)
+app.post("/api/upload-dataset", upload.fields([
+  { name: "csv", maxCount: 1 },
+  { name: "json", maxCount: 1 }
+]), (req, res) => {
+  try {
+    if (!req.files || !req.files.csv || !req.files.json) {
+      return res.status(400).json({
+        error: "Both CSV and JSON files are required",
+        received: {
+          csv: !!req.files?.csv,
+          json: !!req.files?.json
+        }
+      });
+    }
+
+    // Parse CSV file
+    const csvContent = req.files.csv[0].buffer.toString("utf-8");
+    const csvData = parse(csvContent, {
+      columns: true,
+      skip_empty_lines: true,
+      cast: true,
+      cast_date: false
+    });
+
+    // Parse JSON file
+    const jsonContent = req.files.json[0].buffer.toString("utf-8");
+    const jsonData = JSON.parse(jsonContent);
+
+    // Optional metadata from form fields
+    const metadata = {
+      commit: req.body.commit || "",
+      hardware: req.body.hardware || "",
+      dateTime: req.body.dateTime || new Date().toISOString(),
+      notes: req.body.notes || ""
+    };
+
+    res.json({
+      success: true,
+      data: {
+        csv: csvData,
+        json: jsonData,
+        metadata: metadata
+      }
+    });
+  } catch (error) {
+    console.error("[BACKEND] Upload dataset error:", error);
+    res
+      .status(400)
+      .json({ error: "Failed to parse dataset", details: error.message });
   }
 });
 
